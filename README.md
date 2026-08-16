@@ -34,7 +34,7 @@ Windows 预编译 exe（无需安装 FPC）可在 [Releases](https://github.com/
 | Linux | `src/linux/` | GTK2 `GtkStatusIcon` | 动态加载 `libX11.so.6` / `libXtst.so.6`（`XTestFakeMotionEvent`） |
 | macOS | `src/macos/` | Cocoa `NSStatusItem` + 菜单 | CoreGraphics `CGEventCreateMouseEvent` |
 
-- 开机自启：Windows 用 Windows Registry API（`TRegistry`）直接写入 `HKCU\...\CurrentVersion\Run`，不调用 `reg.exe`，因此启动时不产生控制台窗口、也无额外进程开销；Linux 写 `~/.config/autostart/stayawake.desktop`；macOS 写 `~/Library/LaunchAgents/com.keepawake.plist`。
+- 开机自启：Windows 用 Windows Registry API（`TRegistry`）直接写入 `HKCU\...\CurrentVersion\Run`，不调用 `reg.exe`，因此启动时不产生控制台窗口、也无额外进程开销；Linux 写 `~/.config/autostart/stayawake.desktop`；macOS 写 `~/Library/LaunchAgents/com.stayawake.plist`。
   - 自启路径取自当前运行 exe 自身的位置（`ExpandFileName(ParamStr(0))`）。若移动了 exe，重新运行一次即可自动刷新注册表/启动项中的路径。
 - 单实例：Windows 用 `CreateMutexA`（命名互斥体）；Linux/macOS 用 `flock` 独占锁（进程异常退出时内核自动释放，不会留下僵尸锁）。
 
