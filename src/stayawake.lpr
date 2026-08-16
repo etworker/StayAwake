@@ -41,6 +41,7 @@ begin
     if ParamStr(i) = '--start-active' then
       StartActive := True;
   AppActive := StartActive;
+  UpdateExecutionState;
 
   EnsureAutoStart;
   StartMoverThread;

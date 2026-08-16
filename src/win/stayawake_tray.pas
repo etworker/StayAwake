@@ -12,6 +12,7 @@ uses
   SysUtils,
   stayawake_common,
   stayawake_autostart,
+  stayawake_mover,
   Windows;
 
 const
@@ -158,6 +159,7 @@ begin
             if not AppActive then
             begin
               AppActive := True;
+              UpdateExecutionState;
               TraySetVisual;
             end;
           end;
@@ -166,6 +168,7 @@ begin
             if AppActive then
             begin
               AppActive := False;
+              UpdateExecutionState;
               TraySetVisual;
             end;
           end;
@@ -218,6 +221,7 @@ end;
 procedure TrayToggle;
 begin
   AppActive := not AppActive;
+  UpdateExecutionState;
   TraySetVisual;
 end;
 
