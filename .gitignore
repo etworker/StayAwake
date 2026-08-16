@@ -1,0 +1,5 @@
+# Build output (exe + compiled units)
+out/
+
+# Generated exe icon (rebuilt by tools/gen_icon.pas when missing)
+assets/stayawake.ico
