@@ -2,6 +2,15 @@
 
 一个用 Free Pascal 编写的托盘应用：通过每隔 60 秒移动鼠标 1 像素（然后再移回），防止系统进入睡眠/熄屏状态。
 
+## 下载
+
+Windows 预编译 exe（无需安装 FPC）可在 [Releases](https://github.com/etworker/StayAwake/releases) 页面获取：
+
+- `stayawake-win64.exe`（64 位，推荐）
+- `stayawake-win32.exe`（32 位）
+
+> 目前仅提供 Windows 构建；Linux / macOS 需自行按「编译」一节从源码构建。
+
 ## 功能
 
 - 托盘图标：绿色 = 正在防止睡眠；灰色（两条竖杠）= 已暂停。
