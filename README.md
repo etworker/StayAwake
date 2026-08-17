@@ -4,12 +4,12 @@
 
 ## 下载
 
-Windows 预编译 exe（无需安装 FPC）可在 [Releases](https://github.com/etworker/StayAwake/releases) 页面获取：
+预编译二进制（无需安装 FPC）可在 [Releases](https://github.com/etworker/StayAwake/releases) 页面获取：
 
-- `stayawake-win64.exe`（64 位，推荐）
-- `stayawake-win32.exe`（32 位）
-
-> 目前仅提供 Windows 构建；Linux / macOS 需自行按「编译」一节从源码构建。
+- Windows：`stayawake-win64.exe`（64 位，推荐）、`stayawake-win32.exe`（32 位）
+- macOS：`StayAwake-macos-arm64.zip`（Apple Silicon）、`StayAwake-macos-x86_64.zip`（Intel）
+  - 解压后按芯片选择对应的 `StayAwake.app` 双击启动。打包为菜单栏代理程序（`LSUIElement=true`），不弹终端、不进 Dock；左键单击菜单栏图标 = 切换开/关，右键 = 菜单。
+- Linux：需按「编译」一节从源码自构建（尚未提供预编译包）。
 
 ## 功能
 
@@ -132,7 +132,8 @@ stayawake/
 │   └── macos/               # macOS：mover / tray / autostart / single
 └── out/                     # 构建产物
     ├── win32/ win64/        # Windows 分位数产物（stayawake.exe + units/）
-    └── stayawake           # (Linux/macOS) 可执行文件 + units/
+    ├── linux/               # Linux 产物（stayawake + units/）
+    └── macos/<arch>/        # macOS：arm64/ 与 x86_64/ 各一个 StayAwake.app（+ 同目录 units/）
 ```
 
 每个平台目录内四个单元，接口一致，主程序无需感知平台差异：
