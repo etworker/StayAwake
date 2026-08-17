@@ -36,7 +36,7 @@ begin
   if not AcquireSingleInstance then
     Exit;
 
-  StartActive := False;
+  StartActive := True;
   for i := 1 to ParamCount do
     if ParamStr(i) = '--start-active' then
       StartActive := True;
