@@ -13,7 +13,8 @@ uses
   SysUtils,
   stayawake_common,
   stayawake_autostart,
-  CocoaAll;
+  CocoaAll,
+  MacOSAll;
 
 type
   TStayAwakeApp = objcclass(NSObject)
@@ -71,13 +72,14 @@ end;
 procedure TStayAwakeApp.showAbout(sender: id);
 var
   alert: NSAlert;
+  info: string;
 begin
   alert := NSAlert.alloc.init;
   alert.setMessageText(NSString.stringWithUTF8String('About StayAwake'));
-  alert.setInformativeText(NSString.stringWithUTF8String(
-    APP_NAME + ' ' + APP_VERSION + #10 + #10 +
+  info := APP_NAME + ' ' + APP_VERSION + #10 + #10 +
     'Prevents the system from sleeping by moving the mouse every ' +
-    IntToStr(INTERVAL_SECS) + ' seconds.'));
+    IntToStr(INTERVAL_SECS) + ' seconds.';
+  alert.setInformativeText(NSString.stringWithUTF8String(PChar(info)));
   alert.addButtonWithTitle(NSString.stringWithUTF8String('OK'));
   alert.runModal;
   alert.release;
@@ -91,26 +93,40 @@ end;
 function MakeStatusImage: NSImage;
 var
   pixels: TIconPixels;
-  rep: NSBitmapImageRep;
-  bd: PByte;
+  cs: CGColorSpaceRef;
+  data: CFDataRef;
+  provider: CGDataProviderRef;
+  cg: CGImageRef;
   sz: NSSize;
-  i: Integer;
 begin
   Result := nil;
   GenerateIconPixels(AppActive, pixels);
-  rep := NSBitmapImageRep(NSBitmapImageRep.alloc).initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bitmapFormat_bytesPerRow_bitsPerPixel(
-    nil, ICON_SIZE, ICON_SIZE, 8, 4, True, False, NSDeviceRGBColorSpace,
-    0, ICON_SIZE * 4, 32);
-  if rep = nil then
+  cs := CGColorSpaceCreateDeviceRGB;
+  if cs = nil then
     Exit;
-  bd := PByte(rep.bitmapData);
-  if bd <> nil then
-    for i := 0 to ICON_SIZE - 1 do
-      Move(pixels[i * ICON_SIZE * 4], bd[i * ICON_SIZE * 4], ICON_SIZE * 4);
-  sz := NSMakeSize(ICON_SIZE, ICON_SIZE);
-  Result := NSImage(NSImage.alloc).initWithSize(sz);
-  Result.addRepresentation(rep);
-  rep.release;
+  // CFDataCreate copies the bytes, so the on-stack pixel buffer is safe even
+  // after this function returns and the image is drawn lazily later.
+  data := CFDataCreate(nil, @pixels, SizeOf(pixels));
+  provider := nil;
+  cg := nil;
+  if data <> nil then
+    provider := CGDataProviderCreateWithCFData(data);
+  if provider <> nil then
+    cg := CGImageCreate(ICON_SIZE, ICON_SIZE, 8, 32, ICON_SIZE * 4,
+      cs, kCGImageAlphaPremultipliedLast, provider, nil, 0, kCGRenderingIntentDefault);
+  if (provider <> nil) and (cg <> nil) then
+  begin
+    sz := NSMakeSize(ICON_SIZE, ICON_SIZE);
+    Result := NSImage(NSImage.alloc).initWithCGImage_size(cg, sz);
+  end;
+  if cs <> nil then
+    CGColorSpaceRelease(cs);
+  if data <> nil then
+    CFRelease(data);
+  if provider <> nil then
+    CGDataProviderRelease(provider);
+  if cg <> nil then
+    CGImageRelease(cg);
 end;
 
 procedure TraySetVisual;
@@ -134,9 +150,9 @@ begin
   if MenuAutostart <> nil then
   begin
     if IsAutoStartEnabled then
-      MenuAutostart.setState(NSControlStateValueOn)
+      MenuAutostart.setState(NSOnState)
     else
-      MenuAutostart.setState(NSControlStateValueOff);
+      MenuAutostart.setState(NSOffState);
   end;
   img.release;
 end;
@@ -169,15 +185,15 @@ begin
   menu.setAutoenablesItems(False);
 
   MenuStart := NSMenuItem.alloc.initWithTitle_action_keyEquivalent(
-    NSString.stringWithUTF8String('Start Awake'), objcselector('startAwake:'), '');
+    NSString.stringWithUTF8String('Start Awake'), objcselector('startAwake:'), NSString.stringWithUTF8String(''));
   MenuStop := NSMenuItem.alloc.initWithTitle_action_keyEquivalent(
-    NSString.stringWithUTF8String('Stop Awake'), objcselector('stopAwake:'), '');
+    NSString.stringWithUTF8String('Stop Awake'), objcselector('stopAwake:'), NSString.stringWithUTF8String(''));
   MenuAutostart := NSMenuItem.alloc.initWithTitle_action_keyEquivalent(
-    NSString.stringWithUTF8String('Start on Login'), objcselector('toggleAutostart:'), '');
+    NSString.stringWithUTF8String('Start on Login'), objcselector('toggleAutostart:'), NSString.stringWithUTF8String(''));
   aboutItem := NSMenuItem.alloc.initWithTitle_action_keyEquivalent(
-    NSString.stringWithUTF8String('About...'), objcselector('showAbout:'), '');
+    NSString.stringWithUTF8String('About...'), objcselector('showAbout:'), NSString.stringWithUTF8String(''));
   quitItem := NSMenuItem.alloc.initWithTitle_action_keyEquivalent(
-    NSString.stringWithUTF8String('Quit'), objcselector('quitApp:'), '');
+    NSString.stringWithUTF8String('Quit'), objcselector('quitApp:'), NSString.stringWithUTF8String(''));
 
   MenuStart.setTarget(AppDelegate);
   MenuStop.setTarget(AppDelegate);

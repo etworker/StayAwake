@@ -48,7 +48,7 @@ Windows 预编译 exe（无需安装 FPC）可在 [Releases](https://github.com/
   - 自启路径取自当前运行 exe 自身的位置（`ExpandFileName(ParamStr(0))`）。若移动了 exe，重新运行一次即可自动刷新注册表/启动项中的路径。
 - 单实例：Windows 用 `CreateMutexA`（命名互斥体）；Linux/macOS 用 `flock` 独占锁（进程异常退出时内核自动释放，不会留下僵尸锁）。
 
-> 说明：Windows 版（32/64 位）已在本地编译并运行验证；Linux / macOS 版代码按 FPC 3.2.2 源码（gtk2/gtk2ext、cocoaint）逐一核对过 API，但因缺少交叉编译环境，尚未在实际目标机上编译验证。
+> 说明：Windows 版（32/64 位）已在本地编译并运行验证；macOS 版已在 Apple Silicon（aarch64-darwin，FPC 3.2.2）上实际编译并运行验证（托盘、鼠标微动、单实例、开机自启均正常；睡眠抑制通过 `IOPMAssertion` 实现）。Linux 版代码按 FPC 3.2.2 源码（gtk2/gtk2ext）逐一核对过 API，但因缺少对应环境，尚未在实际目标机上编译验证。
 
 ## 依赖
 
@@ -59,38 +59,54 @@ Windows 预编译 exe（无需安装 FPC）可在 [Releases](https://github.com/
 
 ## 编译
 
-构建产物统一输出到 `out/`（exe 与 `.ppu/.o` 分开），不污染源码目录。exe 图标由 `tools/gen_icon.pas` 生成到 `assets/stayawake.ico`（缺失时自动生成）。
+构建产物按平台输出到 `out/<平台>/`，编译中间文件（`.ppu`/`.o`）放在可执行程序旁的 `units` 目录，不污染源码目录。Windows 为 `out/win32`、`out/win64`；Linux 为 `out/linux`（二进制 `stayawake` + 旁边 `units/`）；macOS 为 `out/macos/<架构>/StayAwake.app`，架构目录为 `arm64`（Apple Silicon）与 `x86_64`（Intel），各自的 `units/` 在 `.app` 同目录。`exe` 图标由 `tools/gen_icon.pas` 生成到 `assets/stayawake.ico`（缺失时自动生成）。
 
-Windows（生成 `out/win64/stayawake.exe` 或 `out/win32/stayawake.exe`）：
+编译脚本按平台拆分，互不沾染：
 
 ```bat
-build.cmd            :: 默认 64 位
-build.cmd win32      :: 32 位
-build.cmd win64      :: 64 位
+build.cmd            :: Windows（默认 64 位；win32 / win64 可选）
 ```
-
-Linux / macOS（生成 `out/stayawake`）：
 
 ```sh
-chmod +x build.sh
-./build.sh linux            # Linux（本机架构）
-./build.sh linux aarch64    # 交叉编译到 ARM64（需对应跨编译器/RTL）
-./build.sh macos            # macOS（Intel 或 Apple Silicon）
+chmod +x build-macos.sh build-linux.sh clean.sh
+
+# Linux（在 Linux 机器上运行）
+./build-linux.sh            # 本机架构
+./build-linux.sh aarch64    # 交叉编译到 ARM64（需对应跨编译器/RTL）
+
+# macOS：默认同时构建两个架构目录（arm64 + x86_64），各自一个 .app
+./build-macos.sh                 # 构建 out/macos/arm64/StayAwake.app 与 out/macos/x86_64/StayAwake.app
+./build-macos.sh arm64           # 仅 arm64（Apple Silicon）
+./build-macos.sh x86_64          # 仅 x86_64（Intel，需已安装 x86_64-darwin RTL 与 ppcx64 交叉编译器）
+./build-macos.sh universal       # 把两个切片合成一个通用二进制 fat app（约 7.4MB）
+
+# 清理：删除 out/ 下所有编译中间文件（units 目录与 *.o/*.ppu），保留最终二进制/.app
+./clean.sh
 ```
 
-> 架构说明：源码与架构无关。Windows 分 `win32` / `win64` 两个产物目录（对应 FPC 的 `i386-win32` / `x86_64-win64` 工具链）。Linux 可用 `-P` 指定 i386 / x86_64 / aarch64 / arm 等目标。macOS 现代系统只有 64 位（Intel x86_64 与 Apple Silicon aarch64，均为 64 位），不再区分 32 位。
+> **分两个架构目录（而非通用二进制）**：每个 `.app` 只含单架构可执行文件，分别放在 `out/macos/arm64/` 与 `out/macos/x86_64/`。文件体积最小（每个约 3.7MB，无冗余切片），但需分发/选择两个文件。若想一份文件通吃两种芯片，可改用 `./build-macos.sh universal` 出通用二进制（约 7.4MB）。两种做法行为完全一致，按分发习惯选择即可。
+
+> **x86_64 交叉编译环境**：Homebrew 版 FPC 默认只带本机（arm64）RTL 与编译器。要编出 `x86_64` 那份，需安装 `x86_64-darwin` 的 FPC RTL 与交叉编译器 `ppcx64`（本机已装好：RTL 在 `…/fpc/3.2.2/units/x86_64-darwin`，编译器在 `/opt/homebrew/bin/ppcx64`）。`ppcx64` 是 x86_64 程序，在 Apple Silicon 上经 Rosetta 2 运行，故 x86_64 那次编译较慢。
+
+> **为什么是 `.app` 包**：裸 Mach-O 可执行文件被双击时会由 Terminal.app 当作命令行程序启动（弹出终端窗口）。打包成 `StayAwake.app` 并设置 `LSUIElement=true` 后，它作为菜单栏代理程序运行，双击不再弹终端、也不进 Dock。
+
+> 架构说明：源码与架构无关。macOS 现代系统只有 64 位（Intel x86_64 与 Apple Silicon aarch64，均为 64 位），不再区分 32 位；两套构建产物共用同一份 macOS 平台源码。
 
 ## 使用
 
-```sh
-# 普通启动（默认即 Working / 激活状态）
-out/stayawake
+macOS 按芯片选择对应目录下的 `StayAwake.app` 双击启动即可：
 
-# 以激活状态启动
-out/stayawake --start-active
+```sh
+# Apple Silicon（M1/M2…）
+open out/macos/arm64/StayAwake.app
+
+# Intel Mac
+open out/macos/x86_64/StayAwake.app
 ```
 
-- 左键单击托盘图标 = 切换开/关；右键 = 弹出菜单。
+`LSUIElement=true` 使程序作为菜单栏（代理）程序运行，不显示在 Dock。左键单击菜单栏图标 = 切换开/关；右键 = 弹出菜单。
+
+- 左键单击菜单栏图标 = 切换开/关；右键 = 弹出菜单。
 - 菜单「Start on Login」可随时开启/关闭开机自启（勾选 = 已开启）。
 - 单实例：重复启动会立即静默退出。
 
@@ -98,7 +114,10 @@ out/stayawake --start-active
 
 ```
 stayawake/
-├── build.cmd / build.sh     # 构建脚本（平台目录在脚本内以 -Fu 指定）
+├── build.cmd               # Windows 构建脚本（默认 64 位；win32 / win64 可选）
+├── build-macos.sh          # macOS 构建脚本（默认双架构目录；arm64 / x86_64 / universal 可选）
+├── build-linux.sh          # Linux 构建脚本（默认本机架构；可指定 arch 交叉编译）
+├── clean.sh                # 清理 out/ 下编译中间文件（保留最终二进制/.app）
 ├── assets/
 │   └── stayawake.ico       # 生成的多尺寸 exe 图标
 ├── tools/

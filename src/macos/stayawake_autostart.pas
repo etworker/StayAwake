@@ -36,7 +36,7 @@ var
   sl: TStringList;
 begin
   Path := AutoStartPath;
-  if FileExists(Path) then
+  if (Path = '') or FileExists(Path) then
     Exit;
   if not ForceDirectories(ExtractFilePath(Path)) then
     Exit;
@@ -56,7 +56,15 @@ begin
     sl.Add('  <true/>');
     sl.Add('</dict>');
     sl.Add('</plist>');
-    sl.SaveToFile(Path);
+    try
+      sl.SaveToFile(Path);
+    except
+      // The login-item cannot be registered in this environment (e.g. the
+      // LaunchAgents directory is not writable). That must not crash the app;
+      // StayAwake still runs normally, just without auto-start.
+      on E: Exception do
+        ;
+    end;
   finally
     sl.Free;
   end;
