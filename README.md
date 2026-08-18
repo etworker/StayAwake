@@ -59,7 +59,7 @@
 
 ## 编译
 
-构建产物按平台输出到 `out/<平台>/`，编译中间文件（`.ppu`/`.o`）放在可执行程序旁的 `units` 目录，不污染源码目录。Windows 为 `out/windows/i386`（32 位）、`out/windows/x86_64`（64 位）；Linux 为 `out/linux`（二进制 `stayawake` + 旁边 `units/`）；macOS 为 `out/macos/<架构>/StayAwake.app`，架构目录为 `arm64`（Apple Silicon）与 `x86_64`（Intel），各自的 `units/` 在 `.app` 同目录。`exe` 图标由 `tools/gen_icon.pas` 生成到 `assets/stayawake.ico`（缺失时自动生成）。
+构建产物按平台输出到 `out/<平台>/`，编译中间文件（`.ppu`/`.o`）放在可执行程序旁的 `units` 目录，不污染源码目录。Windows 为 `out/windows/i386`（32 位）、`out/windows/x86_64`（64 位）；Linux 为 `out/linux/<架构>/`（`<架构>` 为 `x86_64` / `i386` / `aarch64` / `arm`，二进制 `stayawake` + 旁边 `units/`）；macOS 为 `out/macos/<架构>/StayAwake.app`，架构目录为 `arm64`（Apple Silicon）与 `x86_64`（Intel），各自的 `units/` 在 `.app` 同目录。`exe` 图标由 `tools/gen_icon.pas` 生成到 `assets/stayawake.ico`（缺失时自动生成）。
 
 编译脚本按平台拆分，互不沾染：
 
@@ -70,8 +70,8 @@ build.cmd            :: Windows（默认 64 位；win32 / win64 可选）
 ```sh
 chmod +x build-macos.sh build-linux.sh clean.sh
 
-# Linux（在 Linux 机器上运行）
-./build-linux.sh            # 本机架构
+# Linux（在 Linux 机器上运行，产物输出到 out/linux/<架构>/）
+./build-linux.sh            # 本机架构（自动探测 x86_64 / i386 / aarch64 / arm）
 ./build-linux.sh aarch64    # 交叉编译到 ARM64（需对应跨编译器/RTL）
 
 # macOS：默认同时构建两个架构目录（arm64 + x86_64），各自一个 .app
@@ -118,6 +118,7 @@ stayawake/
 ├── build-macos.sh          # macOS 构建脚本（默认双架构目录；arm64 / x86_64 / universal 可选）
 ├── build-linux.sh          # Linux 构建脚本（默认本机架构；可指定 arch 交叉编译）
 ├── clean.sh                # 清理 out/ 下编译中间文件（保留最终二进制/.app）
+├── release.sh              # 将 out/windows/<arch> 的 exe 上传到 GitHub Release（gh 需已登录）
 ├── assets/
 │   └── stayawake.ico       # 生成的多尺寸 exe 图标
 ├── tools/
@@ -132,7 +133,7 @@ stayawake/
 │   └── macos/               # macOS：mover / tray / autostart / single
 └── out/                     # 构建产物
     ├── windows/i386/ windows/x86_64/   # Windows 分位数产物（stayawake.exe + units/）
-    ├── linux/               # Linux 产物（stayawake + units/）
+    ├── linux/<arch>/        # Linux 产物（stayawake + units/）
     └── macos/<arch>/        # macOS：arm64/ 与 x86_64/ 各一个 StayAwake.app（+ 同目录 units/）
 ```
 
