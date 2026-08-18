@@ -4,15 +4,17 @@ setlocal enabledelayedexpansion
 rem Build stayawake for Windows.
 rem Usage: build.cmd [win32|win64]   (default: win64)
 rem Set FPC to a full path to fpc.exe if it is not on PATH.
+rem Output: out/windows/x86_64 (win64) or out/windows/i386 (win32),
+rem mirroring the macOS layout out/macos/<arch>.
 
 set TARGET=%~1
 if "%TARGET%"=="" set TARGET=win64
 if /i "%TARGET%"=="win64" (
   set BINDIR=x86_64-win64
-  set OUTDIR=win64
+  set OUTDIR=windows\x86_64
 ) else if /i "%TARGET%"=="win32" (
   set BINDIR=i386-win32
-  set OUTDIR=win32
+  set OUTDIR=windows\i386
 ) else (
   echo Usage: build.cmd [win32^|win64]
   exit /b 1

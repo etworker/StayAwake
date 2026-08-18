@@ -59,7 +59,7 @@
 
 ## 编译
 
-构建产物按平台输出到 `out/<平台>/`，编译中间文件（`.ppu`/`.o`）放在可执行程序旁的 `units` 目录，不污染源码目录。Windows 为 `out/win32`、`out/win64`；Linux 为 `out/linux`（二进制 `stayawake` + 旁边 `units/`）；macOS 为 `out/macos/<架构>/StayAwake.app`，架构目录为 `arm64`（Apple Silicon）与 `x86_64`（Intel），各自的 `units/` 在 `.app` 同目录。`exe` 图标由 `tools/gen_icon.pas` 生成到 `assets/stayawake.ico`（缺失时自动生成）。
+构建产物按平台输出到 `out/<平台>/`，编译中间文件（`.ppu`/`.o`）放在可执行程序旁的 `units` 目录，不污染源码目录。Windows 为 `out/windows/i386`（32 位）、`out/windows/x86_64`（64 位）；Linux 为 `out/linux`（二进制 `stayawake` + 旁边 `units/`）；macOS 为 `out/macos/<架构>/StayAwake.app`，架构目录为 `arm64`（Apple Silicon）与 `x86_64`（Intel），各自的 `units/` 在 `.app` 同目录。`exe` 图标由 `tools/gen_icon.pas` 生成到 `assets/stayawake.ico`（缺失时自动生成）。
 
 编译脚本按平台拆分，互不沾染：
 
@@ -131,7 +131,7 @@ stayawake/
 │   ├── linux/               # Linux：mover / tray / autostart / single
 │   └── macos/               # macOS：mover / tray / autostart / single
 └── out/                     # 构建产物
-    ├── win32/ win64/        # Windows 分位数产物（stayawake.exe + units/）
+    ├── windows/i386/ windows/x86_64/   # Windows 分位数产物（stayawake.exe + units/）
     ├── linux/               # Linux 产物（stayawake + units/）
     └── macos/<arch>/        # macOS：arm64/ 与 x86_64/ 各一个 StayAwake.app（+ 同目录 units/）
 ```
