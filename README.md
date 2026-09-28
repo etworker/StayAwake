@@ -9,7 +9,8 @@
 - Windows：`stayawake-win64.exe`（64 位，推荐）、`stayawake-win32.exe`（32 位）
 - macOS：`StayAwake-macos-arm64.zip`（Apple Silicon）、`StayAwake-macos-x86_64.zip`（Intel）
   - 解压后按芯片选择对应的 `StayAwake.app` 双击启动。打包为菜单栏代理程序（`LSUIElement=true`），不弹终端、不进 Dock；左键单击菜单栏图标 = 切换开/关，右键 = 菜单。
-- Linux：需按「编译」一节从源码自构建（尚未提供预编译包）。
+- Linux：`stayawake-linux-x86_64.tar.gz`（64 位）、`stayawake-linux-aarch64.tar.gz`（ARM64）
+  - 解压出 `stayawake` 可执行文件直接运行（需要 GTK2 运行时 `libgtk2.0-0` 与 X11/libXtst）。
 
 ## 功能
 
@@ -48,7 +49,7 @@
   - 自启路径取自当前运行 exe 自身的位置（`ExpandFileName(ParamStr(0))`）。若移动了 exe，重新运行一次即可自动刷新注册表/启动项中的路径。
 - 单实例：Windows 用 `CreateMutexA`（命名互斥体）；Linux/macOS 用 `flock` 独占锁（进程异常退出时内核自动释放，不会留下僵尸锁）。
 
-> 说明：Windows 版（32/64 位）已在本地编译并运行验证；macOS 版已在 Apple Silicon（aarch64-darwin，FPC 3.2.2）上实际编译并运行验证（托盘、鼠标微动、单实例、开机自启均正常；睡眠抑制通过 `IOPMAssertion` 实现）。Linux 版代码按 FPC 3.2.2 源码（gtk2/gtk2ext）逐一核对过 API，但因缺少对应环境，尚未在实际目标机上编译验证。
+> 说明：Windows 版（32/64 位）已在本地编译并运行验证；macOS 版已在 Apple Silicon（aarch64-darwin，FPC 3.2.2）上实际编译并运行验证（托盘、鼠标微动、单实例、开机自启均正常；睡眠抑制通过 `IOPMAssertion` 实现），x86_64 macOS 为 Rosetta 交叉编译产物。Linux 版（x86_64 / aarch64）已完成完整编译链接（含 GTK2 依赖），尚未在实际桌面上运行验证。
 
 ## 依赖
 
