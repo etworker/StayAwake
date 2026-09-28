@@ -48,9 +48,9 @@ build_macos_arch() {
   <key>CFBundleExecutable</key>
   <string>stayawake</string>
   <key>CFBundleVersion</key>
-  <string>0.1.0</string>
+  <string>0.1.2</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>0.1.2</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleInfoDictionaryVersion</key>

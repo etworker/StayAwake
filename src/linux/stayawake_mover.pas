@@ -8,6 +8,7 @@ uses
   stayawake_common;
 
 procedure StartMoverThread;
+procedure UpdateExecutionState;
 
 implementation
 
@@ -16,6 +17,13 @@ uses
   SysUtils,
   dynlibs,
   ctypes;
+
+procedure UpdateExecutionState;
+begin
+  // Linux has no system-wide sleep-prevention API; the mouse nudge in
+  // TMoverThread.Execute is the sole mechanism.  This stub exists so the
+  // main program can call it uniformly across all platforms.
+end;
 
 type
   PDisplay = Pointer;
@@ -104,7 +112,8 @@ end;
 procedure StartMoverThread;
 begin
   InitXtst;
-  TMoverThread.Create(False);
+  with TMoverThread.Create(False) do
+    FreeOnTerminate := True;
 end;
 
 end.

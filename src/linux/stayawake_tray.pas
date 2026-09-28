@@ -102,7 +102,7 @@ begin
   if IsAutoStartEnabled then
     DisableAutoStart
   else
-    EnsureAutoStart;
+    EnableAutoStart;
 end;
 
 procedure TrayQuit; cdecl;
@@ -131,7 +131,7 @@ end;
 procedure TrayCreate;
 var
   pb: PGdkPixbuf;
-  sep: PGtkWidget;
+  sep1, sep2, sep3: PGtkWidget;
   aboutItem, quitItem: PGtkWidget;
 begin
   gtk_init(nil, nil);
@@ -147,19 +147,19 @@ begin
   TrayMenu := gtk_menu_new;
   TrayStartItem := gtk_menu_item_new_with_label('Start Awake');
   TrayStopItem := gtk_menu_item_new_with_label('Stop Awake');
-  sep := gtk_separator_menu_item_new;
+  sep1 := gtk_separator_menu_item_new;
   TrayAutostartItem := gtk_check_menu_item_new_with_label('Start on Login');
-  sep := gtk_separator_menu_item_new;
+  sep2 := gtk_separator_menu_item_new;
   aboutItem := gtk_menu_item_new_with_label('About...');
-  sep := gtk_separator_menu_item_new;
+  sep3 := gtk_separator_menu_item_new;
   quitItem := gtk_menu_item_new_with_label('Quit');
   gtk_menu_shell_append(GTK_MENU_SHELL(TrayMenu), TrayStartItem);
   gtk_menu_shell_append(GTK_MENU_SHELL(TrayMenu), TrayStopItem);
-  gtk_menu_shell_append(GTK_MENU_SHELL(TrayMenu), sep);
+  gtk_menu_shell_append(GTK_MENU_SHELL(TrayMenu), sep1);
   gtk_menu_shell_append(GTK_MENU_SHELL(TrayMenu), TrayAutostartItem);
-  gtk_menu_shell_append(GTK_MENU_SHELL(TrayMenu), sep);
+  gtk_menu_shell_append(GTK_MENU_SHELL(TrayMenu), sep2);
   gtk_menu_shell_append(GTK_MENU_SHELL(TrayMenu), aboutItem);
-  gtk_menu_shell_append(GTK_MENU_SHELL(TrayMenu), sep);
+  gtk_menu_shell_append(GTK_MENU_SHELL(TrayMenu), sep3);
   gtk_menu_shell_append(GTK_MENU_SHELL(TrayMenu), quitItem);
   gtk_widget_show_all(TrayMenu);
 

@@ -30,13 +30,52 @@ begin
   Result := FileExists(AutoStartPath);
 end;
 
+function AutoStartPathMatches: Boolean;
+var
+  Path: string;
+  sl: TStringList;
+  i: Integer;
+  s, ExePath: string;
+begin
+  Result := False;
+  Path := AutoStartPath;
+  if not FileExists(Path) then
+    Exit;
+  ExePath := ExpandFileName(ParamStr(0));
+  sl := TStringList.Create;
+  try
+    try
+      sl.LoadFromFile(Path);
+      for i := 0 to sl.Count - 1 do
+      begin
+        s := Trim(sl[i]);
+        if (Pos('<string>', s) > 0) and (Pos('</string>', s) > 0) then
+        begin
+          s := Copy(s, Pos('<string>', s) + 8, MaxInt);
+          s := Copy(s, 1, Pos('</string>', s) - 1);
+          if SameText(s, ExePath) then
+          begin
+            Result := True;
+            Exit;
+          end;
+        end;
+      end;
+    except
+      on E: Exception do
+        ;
+    end;
+  finally
+    sl.Free;
+  end;
+end;
+
 procedure EnsureAutoStart;
 var
   Path: string;
   sl: TStringList;
 begin
   Path := AutoStartPath;
-  if (Path = '') or FileExists(Path) then
+  if (Path = '') or AutoStartPathMatches then
     Exit;
   if not ForceDirectories(ExtractFilePath(Path)) then
     Exit;

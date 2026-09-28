@@ -182,7 +182,8 @@ begin
   InitCoreGraphics;
   InitPowerManagement;
   UpdateExecutionState;
-  TMoverThread.Create(False);
+  with TMoverThread.Create(False) do
+    FreeOnTerminate := True;
 end;
 
 initialization

@@ -9,12 +9,14 @@ uses
 
 procedure StartMoverThread;
 procedure UpdateExecutionState;
+procedure WakeMoverThread;
 
 implementation
 
 uses
   Classes,
   SysUtils,
+  SyncObjs,
   Windows;
 
 {$IFDEF WINDOWS}
@@ -28,6 +30,9 @@ function SetThreadExecutionState(esFlags: DWORD): DWORD; stdcall;
 
 // Tell Windows we are actively presenting so it must not blank the display
 // or enter sleep. Mirrors the reliable part the mouse-nudge hack cannot do.
+// SetThreadExecutionState is per-thread: the tray handlers run on the main
+// thread and can only clear its own flags, so the mover thread must refresh
+// this itself on every tick and be woken when the app is paused.
 procedure UpdateExecutionState;
 begin
   if AppActive then
@@ -36,6 +41,15 @@ begin
     SetThreadExecutionState(ES_CONTINUOUS);
 end;
 {$ENDIF}
+
+var
+  WakeEvent: TEvent = nil;
+
+procedure WakeMoverThread;
+begin
+  if WakeEvent <> nil then
+    WakeEvent.SetEvent;
+end;
 
 procedure NudgeMouse;
 var
@@ -57,17 +71,26 @@ procedure TMoverThread.Execute;
 begin
   while not Terminated do
   begin
-    Sleep(INTERVAL_SECS * 1000);
-    if AppActive and (not Terminated) then
+    if WakeEvent <> nil then
     begin
+      WakeEvent.WaitFor(INTERVAL_SECS * 1000);
+      WakeEvent.ResetEvent;
+    end
+    else
+      Sleep(INTERVAL_SECS * 1000);
+    if AppActive then
       NudgeMouse;
-      UpdateExecutionState;
-    end;
+    // Unconditional: only this thread can clear the ES_* flags it set while
+    // active, so pausing must be able to take effect here.
+    UpdateExecutionState;
   end;
 end;
 
 procedure StartMoverThread;
 begin
+  // Auto-reset event: each wake request releases exactly one wait. Windows'
+  // TEvent takes PSecurityAttributes, so nil/empty-name = anonymous event.
+  WakeEvent := TEvent.Create(nil, False, False, '');
   with TMoverThread.Create(False) do
     FreeOnTerminate := True;
 end;

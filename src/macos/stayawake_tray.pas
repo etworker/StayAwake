@@ -13,6 +13,7 @@ uses
   SysUtils,
   stayawake_common,
   stayawake_autostart,
+  stayawake_mover,
   CocoaAll,
   MacOSAll;
 
@@ -39,6 +40,7 @@ procedure TraySetVisual; forward;
 procedure TStayAwakeApp.toggleAwake(sender: id);
 begin
   AppActive := not AppActive;
+  UpdateExecutionState;
   TraySetVisual;
 end;
 
@@ -47,6 +49,7 @@ begin
   if not AppActive then
   begin
     AppActive := True;
+    UpdateExecutionState;
     TraySetVisual;
   end;
 end;
@@ -56,6 +59,7 @@ begin
   if AppActive then
   begin
     AppActive := False;
+    UpdateExecutionState;
     TraySetVisual;
   end;
 end;

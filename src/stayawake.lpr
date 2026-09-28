@@ -22,9 +22,6 @@ uses
 function SetProcessDPIAware: BOOL; stdcall; external 'user32' name 'SetProcessDPIAware';
 {$ENDIF}
 
-var
-  i: Integer;
-
 begin
   {$IFDEF WINDOWS}
   // Mirror the Rust version: declare the process DPI-aware before any mouse
@@ -36,11 +33,9 @@ begin
   if not AcquireSingleInstance then
     Exit;
 
-  StartActive := True;
-  for i := 1 to ParamCount do
-    if ParamStr(i) = '--start-active' then
-      StartActive := True;
-  AppActive := StartActive;
+  // Always start in the Working (active) state; the documented --start-active
+  // flag is accepted but redundant.
+  AppActive := True;
   UpdateExecutionState;
 
   EnsureAutoStart;

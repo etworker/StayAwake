@@ -6,7 +6,7 @@ interface
 
 const
   APP_NAME = 'StayAwake';
-  APP_VERSION = '0.1.0';
+  APP_VERSION = '0.1.2';
   INTERVAL_SECS = 60;
   ICON_SIZE = 32;
 
@@ -15,7 +15,6 @@ type
 
 var
   AppActive: Boolean;
-  StartActive: Boolean;
 
 procedure GenerateIconPixels(Active: Boolean; var Pixels: TIconPixels);
 

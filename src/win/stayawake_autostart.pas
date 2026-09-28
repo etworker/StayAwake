@@ -24,17 +24,26 @@ begin
   Result.RootKey := HKEY_CURRENT_USER;
 end;
 
-function IsAutoStartEnabled: Boolean;
+function ReadRunValue: string;
 var
   r: TRegistry;
 begin
-  Result := False;
+  Result := '';
   r := NewReg;
   try
     if not r.OpenKeyReadOnly(RunKey) then
       Exit;
     try
-      Result := r.ValueExists(APP_NAME) and (r.ReadString(APP_NAME) <> '');
+      if r.ValueExists(APP_NAME) then
+        try
+          Result := r.ReadString(APP_NAME);
+        except
+          // The value can hold a non-REG_SZ type (e.g. when edited by hand);
+          // ReadString raises, and both callers run at startup or on every
+          // tray-menu popup, where an exception would take the app down.
+          on E: Exception do
+            Result := '';
+        end;
     finally
       r.CloseKey;
     end;
@@ -43,12 +52,22 @@ begin
   end;
 end;
 
+function IsAutoStartEnabled: Boolean;
+begin
+  Result := ReadRunValue <> '';
+end;
+
+function AutoStartPathMatches: Boolean;
+begin
+  Result := SameText(ReadRunValue, ExpandFileName(ParamStr(0)));
+end;
+
 procedure EnsureAutoStart;
 var
   r: TRegistry;
   ExePath: string;
 begin
-  if IsAutoStartEnabled then
+  if AutoStartPathMatches then
     Exit;
   ExePath := ExpandFileName(ParamStr(0));
   r := NewReg;

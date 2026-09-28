@@ -169,6 +169,7 @@ begin
             begin
               AppActive := False;
               UpdateExecutionState;
+              WakeMoverThread;
               TraySetVisual;
             end;
           end;
@@ -222,6 +223,9 @@ procedure TrayToggle;
 begin
   AppActive := not AppActive;
   UpdateExecutionState;
+  // Pausing must wake the mover so it clears its own per-thread ES_* flags.
+  if not AppActive then
+    WakeMoverThread;
   TraySetVisual;
 end;
 
@@ -277,7 +281,7 @@ begin
   nid.uFlags := NIF_ICON or NIF_MESSAGE or NIF_TIP;
   nid.uCallbackMessage := WM_TRAYCALLBACK;
   nid.hIcon := TrayIcon;
-  StrPLCopy(@nid.szTip[0], 'StayAwake', Length(nid.szTip));
+  StrPLCopy(@nid.szTip[0], 'StayAwake', Length(nid.szTip) - 1);
   Shell_NotifyIcon(NIM_ADD, @nid);
 
   TraySetVisual;
