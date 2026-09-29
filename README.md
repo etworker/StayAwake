@@ -57,6 +57,7 @@
 - Windows：32 位与 64 位各需对应的 FPC 工具链（`i386-win32` / `x86_64-win64`，两者都装则脚本自动按目标选择）。
 - Linux：需已安装 GTK2 运行时（`libgtk2.0-0` 等）；编译不依赖 GTK 头文件/静态库（FPC 的 gtk2 单元在运行时动态加载）。
 - macOS：需 Xcode Command Line Tools（链接 Cocoa 框架）。
+- Linux → Windows 交叉编译另需 `gcc` 与（32 位目标）一份 i386 版 FPC，见下方「交叉编译前置条件」。
 
 ## 编译
 
@@ -77,7 +78,62 @@ build.cmd            :: Windows（默认 64 位；win32 / win64 可选）
 # 产物：out/windows/x86_64/stayawake.exe、out/windows/i386/stayawake.exe
 ```
 
-> **Linux -> Windows 交叉编译前置条件**（Debian/Ubuntu）：`apt-get install fpc fpc-source binutils-mingw-w64`。Debian 的 `fpc` 不自带 Win32/Win64 的 RTL，脚本会用 `fpc-source` 里的 RTL 源码现场构建所需单元；32 位目标另需一份 i386 版 FPC（`ppc386`）。mingw 的 binutils 命名与 FPC 期望不同，脚本会尝试在 `PATH` 中建立别名（`x86_64-win64-ld` 等）。
+> **Linux → Windows 交叉编译前置条件**（以 Debian/Ubuntu 为例）
+>
+> 1. 基础工具链：`apt-get install fpc fpc-source binutils-mingw-w64 gcc`
+>    - `fpc-source`：Debian 的 `fpc` 不自带 Win32/Win64 的 RTL，脚本用这里的 RTL 源码现场构建所需单元。
+>    - `gcc`：**必需**。`windres` 编译 `.rc` 资源时会调用 `gcc` 做预处理，缺失会直接报
+>      `sh: 1: gcc: not found` → `preprocessing failed` → `Error while compiling resources`，
+>      win64 / win32 两个目标都编不出来。（`gcc` 可能被其它包顺带装上，但不应依赖这点，显式安装更稳。）
+>    - `binutils-mingw-w64`：mingw 的 binutils 命名与 FPC 期望不同，脚本会尝试在 `PATH` 中建立别名
+>      （`x86_64-win64-ld` / `i386-win32-ld` / `*-windres` 等）。
+>
+> 2. **仅当需要 32 位目标（win32）时**，还需一份 i386 版 FPC（`ppc386`）。Debian 多架构下这一步
+>    有三处坑，照下面顺序做即可：
+>
+>    ```sh
+>    dpkg --add-architecture i386 && apt-get update
+>    apt-get download fp-compiler-3.2.2:i386
+>    dpkg -i --force-depends fp-compiler-3.2.2_3.2.2+dfsg-20_i386.deb
+>    ln -sf /usr/lib/i386-linux-gnu/fpc/3.2.2/ppc386 /usr/local/bin/ppc386
+>    ```
+>
+>    然后**把两套架构的单元搜索路径都补进 `/etc/fpc-3.2.2.cfg`**（见下面第三个坑，不补会连 amd64
+>    目标都编不动；用 `#ifdef` 分架构，重复追加无害）：
+>
+>    ```sh
+>    cat >> /etc/fpc-3.2.2.cfg <<'EOF'
+>
+>    # --- multiarch: keep both unit search roots so ppcx64 and ppc386 both resolve RTL ---
+>    #ifdef cpux86_64
+>    -Fu/usr/lib/x86_64-linux-gnu/fpc/$fpcversion/units/$fpctarget
+>    -Fu/usr/lib/x86_64-linux-gnu/fpc/$fpcversion/units/$fpctarget/*
+>    -Fu/usr/lib/x86_64-linux-gnu/fpc/$fpcversion/units/$fpctarget/rtl
+>    #endif
+>    #ifdef cpui386
+>    -Fu/usr/lib/i386-linux-gnu/fpc/$fpcversion/units/$fpctarget
+>    -Fu/usr/lib/i386-linux-gnu/fpc/$fpcversion/units/$fpctarget/*
+>    -Fu/usr/lib/i386-linux-gnu/fpc/$fpcversion/units/$fpctarget/rtl
+>    #endif
+>    EOF
+>    ```
+>
+>    三处坑：
+>    - **`binutils` 与 `binutils:i386` 互相 `Conflicts`**，装不成「既有 amd64 又有 i386 的 binutils」。
+>      所以不能走 `apt-get install fp-compiler-3.2.2:i386`——它依赖未限定架构的 `binutils`，apt 会
+>      一路解到 `binutils:i386`，然后因冲突把整个安装判为不可满足（`E: Unable to correct problems,
+>      you have held broken packages`）。i386 的 FPC 其实**用 amd64 的 binutils 就能工作**，因此直接用
+>      `dpkg --force-depends` 单独装这个 `.deb` 即可绕开依赖解算。（装完 `dpkg --audit` 应为空。）
+>    - **`ppc386` 不在 `PATH` 里**：该 `.deb` 不会把 `ppc386` 放进 `/usr/bin`（那里的 alternative 归
+>      amd64 包所有），二进制实际在 `/usr/lib/i386-linux-gnu/fpc/3.2.2/ppc386`，故需手动 `ln -sf`。
+>    - **共享的 `/etc/fpc-3.2.2.cfg` 会被写坏**：两个 `fp-compiler-3.2.2` 通过 `update-alternatives`
+>      共用同一个 `/usr/bin/fpc` 与 `/etc/fpc-3.2.2.cfg`。最后装 i386 的那个，会把配置里的单元搜索
+>      根路径整段改成 `/usr/lib/i386-linux-gnu/fpc/...`，于是 **`ppcx64` 找不到自己的 RTL**，连 amd64
+>      的原生编译都会报 `Fatal: Can't find unit system`。上面那段按 `#ifdef cpu...` 把两种架构的路径
+>      都写回即可（`-Fu` 是累加的，多写不冲突）。
+>
+>    装完确认：`which ppcx64 ppc386`（`/usr/bin/ppcx64` 与 `/usr/local/bin/ppc386`），
+>    `dpkg --audit` 无输出，且 amd64 与 i386 各编一个 hello world 都通过。
 
 ```sh
 chmod +x build-macos.sh build-linux.sh build-cross.sh clean.sh

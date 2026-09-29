@@ -8,13 +8,17 @@
 #   out/windows/x86_64/stayawake.exe
 #   out/windows/i386/stayawake.exe
 #
-# Requirements (Debian/Ubuntu: apt-get install fpc fpc-source binutils-mingw-w64):
+# Requirements (Debian/Ubuntu: apt-get install fpc fpc-source binutils-mingw-w64 gcc):
 #   - a native FPC (ppcx64) and, for the 32-bit target, an i386 FPC (ppc386);
 #   - the FPC RTL sources from the 'fpc-source' package, used to satisfy the
 #     Win32/Win64 RTL units that Debian does not ship prebuilt;
+#   - gcc, required by windres to preprocess the .rc (both targets fail without);
 #   - mingw-w64 binutils, reachable by FPC as x86_64-win64-ld / i386-win32-ld
 #     (plus matching 'windres'); the script below links them into PATH if the
 #     distro-provided names differ.
+# See the README section 'Linux → Windows 交叉编译前置条件' for the full,
+# reproducible setup, including the Debian multiarch caveats that make the
+# plain 'apt-get install fp-compiler-3.2.2:i386' path fail.
 set -e
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
