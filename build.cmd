@@ -37,6 +37,7 @@ if defined FPC_EXE (
 )
 
 if not exist "%ROOT%assets\stayawake.ico" (
+  if not exist "%ROOT%assets" mkdir "%ROOT%assets"
   if not exist "%OUT%\tools" mkdir "%OUT%\tools"
   if defined FPC_EXE (
     "!FPC_EXE!" -Mobjfpc -O2 -Fu"%SRC%\common" -FE"%OUT%\tools" -FU"%OUT%\tools" "%ROOT%tools\gen_icon.pas"

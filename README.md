@@ -21,8 +21,8 @@
   - **About...**：关于对话框。
   - **Quit**：退出。
 - 左键单击托盘图标：在启动 / 停止之间切换。
-- 启动参数 `--start-active`：以「激活」状态启动（**默认即为激活状态**，此参数可显式确保）。
-- **单实例**：同一用户下只允许运行一个实例（Windows 用命名互斥体；Linux/macOS 用 `/tmp` 下的 `flock` 文件锁）。
+- 启动即以「激活」状态运行（无命令行参数，开箱即用）。
+- **单实例**：同一用户下只允许运行一个实例（Windows 用命名互斥体；Linux/macOS 用 `flock` 文件锁，优先位于 `$XDG_RUNTIME_DIR`，否则退回 `/tmp` 下带 UID 的文件名，因此多用户机器上互不干扰）。
 - **exe 图标**：Windows 可执行文件内置图标（绿色圆形，与托盘一致，含 16/32/48/64/256 多尺寸）。
 
 ## 限制与注意事项
@@ -68,8 +68,19 @@
 build.cmd            :: Windows（默认 64 位；win32 / win64 可选）
 ```
 
+在 Linux 上交叉编译出 Windows 产物（无需 Windows 机器）：
+
 ```sh
-chmod +x build-macos.sh build-linux.sh clean.sh
+./build-cross.sh            # 同时构建 win64 + win32
+./build-cross.sh win64      # 仅 64 位
+./build-cross.sh win32      # 仅 32 位
+# 产物：out/windows/x86_64/stayawake.exe、out/windows/i386/stayawake.exe
+```
+
+> **Linux -> Windows 交叉编译前置条件**（Debian/Ubuntu）：`apt-get install fpc fpc-source binutils-mingw-w64`。Debian 的 `fpc` 不自带 Win32/Win64 的 RTL，脚本会用 `fpc-source` 里的 RTL 源码现场构建所需单元；32 位目标另需一份 i386 版 FPC（`ppc386`）。mingw 的 binutils 命名与 FPC 期望不同，脚本会尝试在 `PATH` 中建立别名（`x86_64-win64-ld` 等）。
+
+```sh
+chmod +x build-macos.sh build-linux.sh build-cross.sh clean.sh
 
 # Linux（在 Linux 机器上运行，产物输出到 out/linux/<架构>/）
 ./build-linux.sh            # 本机架构（自动探测 x86_64 / i386 / aarch64 / arm）
@@ -118,6 +129,7 @@ stayawake/
 ├── build.cmd               # Windows 构建脚本（默认 64 位；win32 / win64 可选）
 ├── build-macos.sh          # macOS 构建脚本（默认双架构目录；arm64 / x86_64 / universal 可选）
 ├── build-linux.sh          # Linux 构建脚本（默认本机架构；可指定 arch 交叉编译）
+├── build-cross.sh          # Linux → Windows 交叉编译脚本（win64 / win32 / both）
 ├── clean.sh                # 清理 out/ 下编译中间文件（保留最终二进制/.app）
 ├── release.sh              # 将 out/windows/<arch> 的 exe 上传到 GitHub Release（gh 需已登录）
 ├── assets/

@@ -67,6 +67,11 @@ begin
   else
     OutPath := 'keep_awake.ico';
 
+  // Create the destination directory when missing so the build works from a
+  // clean checkout (assets/ is git-ignored and therefore absent).
+  if ExtractFilePath(OutPath) <> '' then
+    ForceDirectories(ExtractFilePath(OutPath));
+
   fs := TFileStream.Create(OutPath, fmCreate);
   try
     W2(fs, 0);
