@@ -12,6 +12,12 @@ SRC="$(cd "$(dirname "$0")" && pwd)/src"
 OUT="$(cd "$(dirname "$0")" && pwd)/out/macos"
 FPC="${FPC:-fpc}"
 
+# Single source of truth for the version is APP_VERSION in
+# src/common/stayawake_common.pas; keep the Info.plist in sync with it
+# instead of editing the number in two more places.
+VERSION="$(sed -n "s/.*APP_VERSION *= *'\([^']*\)'.*/\1/p" "$SRC/common/stayawake_common.pas" | head -n1)"
+[ -n "$VERSION" ] || { echo "!! could not read APP_VERSION from $SRC/common/stayawake_common.pas" >&2; exit 1; }
+
 MODE="${1:-}"
 
 # Compile one macOS executable for the given arch and wrap it in a .app bundle
@@ -48,9 +54,9 @@ build_macos_arch() {
   <key>CFBundleExecutable</key>
   <string>stayawake</string>
   <key>CFBundleVersion</key>
-  <string>0.1.2</string>
+  <string>$VERSION</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.2</string>
+  <string>$VERSION</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleInfoDictionaryVersion</key>

@@ -138,11 +138,16 @@ stayawake/
     └── macos/<arch>/        # macOS：arm64/ 与 x86_64/ 各一个 StayAwake.app（+ 同目录 units/）
 ```
 
-每个平台目录内四个单元，接口一致，主程序无需感知平台差异：
+每个平台目录内四个单元，结构一致，主程序只依赖各平台共有的 5 个符号
+（`AcquireSingleInstance` / `UpdateExecutionState` / `EnsureAutoStart` /
+`StartMoverThread` / `TrayCreate`），无需感知平台差异：
 
 | 单元 | 职责 |
 | ---- | ---- |
 | `stayawake_single.pas` | `AcquireSingleInstance`：单实例锁 |
-| `stayawake_mover.pas` | `StartMoverThread`：定时移动鼠标的线程（`NudgeMouse`） |
+| `stayawake_mover.pas` | `StartMoverThread`：定时移动鼠标的线程（`NudgeMouse`）。Windows 额外导出 `WakeMoverThread`，供托盘在暂停/恢复时立即唤醒线程 |
 | `stayawake_tray.pas` | `TrayCreate`：托盘图标 + 右键菜单 + 事件循环 |
-| `stayawake_autostart.pas` | `EnsureAutoStart` / `IsAutoStartEnabled` / `DisableAutoStart` |
+| `stayawake_autostart.pas` | `EnsureAutoStart` / `IsAutoStartEnabled` / `DisableAutoStart`；Linux 额外导出 `EnableAutoStart`（GNOME 会把条目原地标记为 `X-GNOME-Autostart-enabled=false`，需要一个「即使存在也重新启用」的入口） |
+
+> 除上表列出的 5 个共有符号外，各平台按自身需要额外导出少量符号（如 Windows 的
+> `WakeMoverThread`、Linux 的 `EnableAutoStart`），主程序不引用它们。

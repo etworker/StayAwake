@@ -39,9 +39,9 @@ if defined FPC_EXE (
 if not exist "%ROOT%assets\stayawake.ico" (
   if not exist "%OUT%\tools" mkdir "%OUT%\tools"
   if defined FPC_EXE (
-    "!FPC_EXE!" -Mobjfpc -O2 -FE"%OUT%\tools" -FU"%OUT%\tools" "%ROOT%tools\gen_icon.pas"
+    "!FPC_EXE!" -Mobjfpc -O2 -Fu"%SRC%\common" -FE"%OUT%\tools" -FU"%OUT%\tools" "%ROOT%tools\gen_icon.pas"
   ) else (
-    fpc -Mobjfpc -O2 -FE"%OUT%\tools" -FU"%OUT%\tools" "%ROOT%tools\gen_icon.pas"
+    fpc -Mobjfpc -O2 -Fu"%SRC%\common" -FE"%OUT%\tools" -FU"%OUT%\tools" "%ROOT%tools\gen_icon.pas"
   )
   if errorlevel 1 (
     echo Icon generation failed.

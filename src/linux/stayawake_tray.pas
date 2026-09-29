@@ -31,7 +31,7 @@ var
   i: Integer;
 begin
   Result := nil;
-  GenerateIconPixels(AppActive, pixels);
+  GenerateTrayIconPixels(AppActive, pixels);
   pb := gdk_pixbuf_new(GDK_COLORSPACE_RGB, TRUE, 8, ICON_SIZE, ICON_SIZE);
   if pb = nil then
     Exit;
@@ -97,8 +97,17 @@ begin
   end;
 end;
 
+// Guards against RefreshMenu() re-entering this handler: setting the
+// check-menu-item state programmatically (gtk_check_menu_item_set_active)
+// emits 'activate' whenever the value changes, which would otherwise toggle
+// the real autostart setting every time the user merely opens the menu.
+var
+  SyncingMenu: Boolean = False;
+
 procedure TrayAutostartProc; cdecl;
 begin
+  if SyncingMenu then
+    Exit;
   if IsAutoStartEnabled then
     DisableAutoStart
   else
@@ -116,8 +125,13 @@ begin
     Exit;
   gtk_widget_set_sensitive(TrayStartItem, not AppActive);
   gtk_widget_set_sensitive(TrayStopItem, AppActive);
-  gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(TrayAutostartItem),
-    IsAutoStartEnabled);
+  SyncingMenu := True;
+  try
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(TrayAutostartItem),
+      IsAutoStartEnabled);
+  finally
+    SyncingMenu := False;
+  end;
 end;
 
 procedure TrayPopupSignal(status_icon: PGtkStatusIcon; button: guint;
