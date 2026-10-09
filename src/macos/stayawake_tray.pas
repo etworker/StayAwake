@@ -40,6 +40,7 @@ var
   Bindings: array of TItemBinding;
 
 function MakeTrayNSImage: NSImage; forward;
+function MakeEyeNSImage(Px, Pt: Integer; Template: Boolean): NSImage; forward;
 
 // ---- Platform hooks ---------------------------------------------------------
 
@@ -94,12 +95,21 @@ procedure HookShowAbout; cdecl;
 var
   alert: NSAlert;
   info: string;
+  icon: NSImage;
 begin
   alert := NSAlert.alloc.init;
   alert.setMessageText(NSString.stringWithUTF8String(PChar(L(SAbout))));
   info := AboutText + #10#10 +
       '合盖行为(接电源时)可在托盘菜单切换(Apple Silicon)。';
   alert.setInformativeText(NSString.stringWithUTF8String(PChar(info)));
+  // The bundle ships no .icns, so NSAlert would fall back to the generic
+  // system app icon; show the colored eye instead (same artwork as the tray).
+  icon := MakeEyeNSImage(256, 64, False);
+  if icon <> nil then
+  begin
+    alert.setIcon(icon);
+    icon.release;
+  end;
   alert.addButtonWithTitle(NSString.stringWithUTF8String('OK'));
   alert.runModal;
   alert.release;
@@ -194,12 +204,9 @@ end;
 
 // ---- Tray icon artwork ------------------------------------------------------
 
-function MakeTrayNSImage: NSImage;
-const
-  // 36 px @ 18 pt = 2x; menu-bar status items draw at ~18 pt, so this stays
-  // crisp on Retina instead of being scaled up from a 32 px bitmap.
-  ImgPx = 36;
-  ImgPt = 18;
+// Render the shared eye artwork at any size. Template=True lets the system
+// re-color for dark/light menu bars; the About dialog wants the colored eye.
+function MakeEyeNSImage(Px, Pt: Integer; Template: Boolean): NSImage;
 var
   Pixels: array of Byte;
   cs: CGColorSpaceRef;
@@ -209,8 +216,8 @@ var
   sz: NSSize;
 begin
   Result := nil;
-  SetLength(Pixels, ImgPx * ImgPx * 4);
-  GenerateIconPixels(ImgPx, AppActive, @Pixels[0]);
+  SetLength(Pixels, Px * Px * 4);
+  GenerateIconPixels(Px, AppActive, @Pixels[0]);
   cs := CGColorSpaceCreateDeviceRGB;
   if cs = nil then
     Exit;
@@ -222,15 +229,14 @@ begin
   if data <> nil then
     provider := CGDataProviderCreateWithCFData(data);
   if provider <> nil then
-    cg := CGImageCreate(ImgPx, ImgPx, 8, 32, ImgPx * 4,
+    cg := CGImageCreate(Px, Px, 8, 32, Px * 4,
       cs, kCGImageAlphaPremultipliedLast, provider, nil, 0, kCGRenderingIntentDefault);
   if (provider <> nil) and (cg <> nil) then
   begin
-    sz := NSMakeSize(ImgPt, ImgPt);
+    sz := NSMakeSize(Pt, Pt);
     Result := NSImage(NSImage.alloc).initWithCGImage_size(cg, sz);
-    // Single-color artwork: as a template the system re-colors it for dark
-    // and light menu bars; open vs closed eye distinguishes the state.
-    Result.setTemplate(True);
+    if Template then
+      Result.setTemplate(True);
   end;
   if cs <> nil then
     CGColorSpaceRelease(cs);
@@ -240,6 +246,16 @@ begin
     CGDataProviderRelease(provider);
   if cg <> nil then
     CGImageRelease(cg);
+end;
+
+function MakeTrayNSImage: NSImage;
+const
+  // 36 px @ 18 pt = 2x; menu-bar status items draw at ~18 pt, so this stays
+  // crisp on Retina instead of being scaled up from a 32 px bitmap.
+  ImgPx = 36;
+  ImgPt = 18;
+begin
+  Result := MakeEyeNSImage(ImgPx, ImgPt, True);
 end;
 
 // ---- Entry point ------------------------------------------------------------

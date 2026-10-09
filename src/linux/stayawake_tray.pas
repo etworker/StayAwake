@@ -39,23 +39,32 @@ var
   MenuRoot: PMenuNode = nil;
   Bindings: array of TItemBinding;
 
+function MakePixbufSized(Size: Integer): PGdkPixbuf; forward;
+
 function MakePixbuf: PGdkPixbuf;
+begin
+  Result := MakePixbufSized(ICON_SIZE);
+end;
+
+// Sized variant (e.g. 96 px for the About dialog image).
+function MakePixbufSized(Size: Integer): PGdkPixbuf;
 var
-  pixels: TIconPixels;
+  pixels: array of Byte;
   pb: PGdkPixbuf;
   rstride: cint;
   dst: PByte;
   i: Integer;
 begin
   Result := nil;
-  GenerateTrayIconPixels(AppActive, pixels);
-  pb := gdk_pixbuf_new(GDK_COLORSPACE_RGB, TRUE, 8, ICON_SIZE, ICON_SIZE);
+  SetLength(pixels, Size * Size * 4);
+  GenerateIconPixels(Size, AppActive, @pixels[0]);
+  pb := gdk_pixbuf_new(GDK_COLORSPACE_RGB, TRUE, 8, Size, Size);
   if pb = nil then
     Exit;
   rstride := gdk_pixbuf_get_rowstride(pb);
   dst := PByte(gdk_pixbuf_get_pixels(pb));
-  for i := 0 to ICON_SIZE - 1 do
-    Move(pixels[i * ICON_SIZE * 4], dst[i * rstride], ICON_SIZE * 4);
+  for i := 0 to Size - 1 do
+    Move(pixels[i * Size * 4], dst[i * rstride], Size * 4);
   Result := pb;
 end;
 
@@ -97,6 +106,7 @@ end;
 procedure HookShowAbout; cdecl;
 var
   dlg: PGtkWidget;
+  pb: PGdkPixbuf;
 begin
   dlg :=
       gtk_message_dialog_new(
@@ -110,6 +120,16 @@ begin
                   + 'Linux:合盖行为可按电源状态在托盘菜单中切换。'
           )
       );
+  // Replace the generic info icon with the app eye (same artwork as tray).
+  // FPC 3.2.2 bindings lack gtk_message_dialog_set_image; the "image"
+  // GObject property is the same thing.
+  pb := MakePixbufSized(96);
+  if pb <> nil then
+  begin
+    g_object_set(G_OBJECT(dlg), 'image',
+      gtk_image_new_from_pixbuf(pb), nil);
+    g_object_unref(pb);
+  end;
   gtk_dialog_run(GTK_DIALOG(dlg));
   gtk_widget_destroy(dlg);
 end;
