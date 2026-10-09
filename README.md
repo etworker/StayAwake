@@ -23,17 +23,20 @@
 - 左键单击托盘图标：在启动 / 停止之间切换。
 - 启动参数 `--start-active`：以「激活」状态启动（**默认即为激活状态**，此参数可显式确保）。
 - **单实例**：同一用户下只允许运行一个实例（Windows 用命名互斥体；Linux/macOS 用 `/tmp` 下的 `flock` 文件锁）。
+- **合盖行为（Linux）**：托盘菜单新增「Lid Close on AC」子菜单，可在 **Do Nothing (Guard)** 与 **Suspend** 之间切换插电时的合盖行为。守卫以用户级 systemd 服务运行（**无需 root**），直接读取内核（`/sys`）的电源状态，因此**免疫 UPower 误判**——即使 GNOME 误以为在使用电池，插电合盖也不会睡眠。电池合盖始终维持系统默认。详见 [linux/lid-guard/](linux/lid-guard/)。
 - **exe 图标**：Windows 可执行文件内置图标（绿色圆形，与托盘一致，含 16/32/48/64/256 多尺寸）。
 
 ## 限制与注意事项
 
-本程序只能阻止「空闲导致」的睡眠 / 熄屏 / 锁屏，**不能**拦截由显式电源动作触发的行为：
+本程序对「空闲导致」的睡眠 / 熄屏 / 锁屏的拦截是全平台的；对「合盖」这类显式电源动作，各平台能力不同：
 
-- **合盖不防睡**：关闭笔记本盖子时是否睡眠 / 休眠 / 锁屏，由 Windows 电源计划中「关闭盖子时」的动作决定，属于*显式*电源动作。`SetThreadExecutionState` 无法覆盖它，本程序也无权拦截。只要该项设为「睡眠」或「休眠」，合盖必睡。
-- **改合盖策略需要管理员**：把「关闭盖子时」改为「不采取任何操作」属于修改系统电源策略，写入 `HKLM\SYSTEM\CurrentControlSet\Control\Power`，**需要管理员权限**。标准用户会被拒绝（Access is denied）。在受企业镜像 / 域控管理的机器上，该设置可能根本不向用户暴露，即便拿到 GUID 也无法写入。
-- **仅在开盖时有效**：本程序在「盖子打开、正常使用或闲置」时保持系统常亮；一旦合盖且策略为睡眠，效果即终止。
-
-> 非管理员用户的现实约束：本机已验证当前账户为普通用户（非 `Administrators`），且「电源按钮和盖子」子组中仅暴露「开始菜单电源按钮」一项，「关闭盖子」设置不可见。因此在该环境下，**合盖防睡无解**——只能保持开盖，或外接显示器并切到「仅第二屏」（部分机型仍可能睡眠），或取得管理员后修改电源策略。
+- **Linux：已支持**。`linux/lid-guard/` 组件提供用户级 systemd 服务 + 托盘子菜单（「Lid Close on AC」）：
+  - 插电合盖可选「不动作」或「睡眠」，电池合盖始终维持系统默认；
+  - 守卫直接读取内核（`/sys`）的电源状态，**免疫 UPower 误判**——已实际修复「插着电、GNOME 却按电池策略在合盖时睡眠」的案例（XPS 13 L322X / Ubuntu 22.04）；
+  - 安装：`linux/lid-guard/install.sh`（用户级，无需 sudo）；卸载：同目录 `uninstall.sh`。
+- **Windows：合盖防睡需要管理员**。把「关闭盖子时」改为「不采取任何操作」属于修改系统电源策略，写入 `HKLM\SYSTEM\CurrentControlSet\Control\Power`，**需要管理员权限**。标准用户会被拒绝（Access is denied）。在受企业镜像 / 域控管理的机器上，该设置可能根本不向用户暴露，即便拿到 GUID 也无法写入。
+- **macOS：不支持**。苹果不提供合盖行为的用户级配置，第三方内核级补丁存在安全风险，本项目不予采用。
+- **仅在开盖时有效（Windows/macOS）**：这两个平台的托盘程序只在「盖子打开、正常使用或闲置」时保持系统常亮；一旦合盖且策略为睡眠，效果即终止。
 
 ## 平台支持
 
@@ -48,8 +51,9 @@
 - 开机自启：Windows 用 Windows Registry API（`TRegistry`）直接写入 `HKCU\...\CurrentVersion\Run`，不调用 `reg.exe`，因此启动时不产生控制台窗口、也无额外进程开销；Linux 写 `~/.config/autostart/stayawake.desktop`；macOS 写 `~/Library/LaunchAgents/com.stayawake.plist`。
   - 自启路径取自当前运行 exe 自身的位置（`ExpandFileName(ParamStr(0))`）。若移动了 exe，重新运行一次即可自动刷新注册表/启动项中的路径。
 - 单实例：Windows 用 `CreateMutexA`（命名互斥体）；Linux/macOS 用 `flock` 独占锁（进程异常退出时内核自动释放，不会留下僵尸锁）。
+- 合盖守卫（Linux）：`linux/lid-guard/` — 用户级 systemd 服务 + 托盘子菜单，模式文件 `~/.config/stayawake/lid-mode`（`block` / `allow`），详见上文「功能」与「限制与注意事项」。
 
-> 说明：Windows 版（32/64 位）已在本地编译并运行验证；macOS 版已在 Apple Silicon（aarch64-darwin，FPC 3.2.2）上实际编译并运行验证（托盘、鼠标微动、单实例、开机自启均正常；睡眠抑制通过 `IOPMAssertion` 实现），x86_64 macOS 为 Rosetta 交叉编译产物。Linux 版（x86_64 / aarch64）已完成完整编译链接（含 GTK2 依赖），尚未在实际桌面上运行验证。
+> 说明：Windows 版（32/64 位）已在本地编译并运行验证；macOS 版已在 Apple Silicon（aarch64-darwin，FPC 3.2.2）上实际编译并运行验证（托盘、鼠标微动、单实例、开机自启均正常；睡眠抑制通过 `IOPMAssertion` 实现），x86_64 macOS 为 Rosetta 交叉编译产物。Linux 版（x86_64）已在 Ubuntu 22.04 / GNOME (X11) 实机运行验证（托盘、鼠标微动、单实例、开机自启正常），合盖守卫组件亦已实测（模式切换、抑制锁、实机合盖拦截）。
 
 ## 依赖
 
@@ -124,6 +128,8 @@ stayawake/
 │   └── stayawake.ico       # 生成的多尺寸 exe 图标
 ├── tools/
 │   └── gen_icon.pas         # 图标生成器（与托盘同款像素画）
+├── linux/
+│   └── lid-guard/           # Linux 合盖守卫：守卫脚本 + systemd --user 单元 + 安装/卸载
 ├── src/
 │   ├── stayawake.lpr       # 主程序：单实例 → 参数解析 → 自启 → 线程 → 托盘
 │   ├── stayawake.rc        # (Windows) 图标资源定义
