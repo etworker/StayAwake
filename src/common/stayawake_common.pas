@@ -6,7 +6,7 @@ interface
 
 const
   APP_NAME = 'StayAwake';
-  APP_VERSION = '0.1.2';
+  APP_VERSION = '0.2.0';
   INTERVAL_SECS = 60;
   ICON_SIZE = 32;
 

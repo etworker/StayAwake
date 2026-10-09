@@ -1,9 +1,11 @@
 #!/bin/sh
 
-# Upload built Windows binaries to a GitHub Release.
-# Requires: gh CLI authenticated, and the Windows binaries already built:
-#   out/windows/x86_64/stayawake.exe
-#   out/windows/i386/stayawake.exe
+# Upload built binaries to a GitHub Release.
+# Requires: gh CLI authenticated, and the builds already present:
+#   Windows: out/windows/x86_64/stayawake.exe + out/windows/i386/stayawake.exe
+#            (run build.cmd win64 / build.cmd win32)
+#   Linux:   out/linux/stayawake-linux-<arch>.tar.gz
+#            (run ./package-linux.sh, optionally per arch)
 # (macOS ships as .app bundles; zip them manually before uploading if desired.)
 # Usage: ./release.sh <tag>   (default: latest git tag)
 
@@ -17,6 +19,7 @@ trap 'rm -rf "$TMP"' EXIT
 TAG="${1:-$(git -C "$ROOT" describe --tags --abbrev=0 2>/dev/null)}"
 [ -n "$TAG" ] || { echo "no tag given and none found" >&2; exit 1; }
 
+# --- Windows (required) -----------------------------------------------------
 WIN64="$OUT/windows/x86_64/stayawake.exe"
 WIN32="$OUT/windows/i386/stayawake.exe"
 [ -f "$WIN64" ] || { echo "missing: $WIN64 (run build.cmd win64)" >&2; exit 1; }
@@ -27,8 +30,18 @@ WIN32="$OUT/windows/i386/stayawake.exe"
 cp "$WIN64" "$TMP/stayawake-win64.exe"
 cp "$WIN32" "$TMP/stayawake-win32.exe"
 
+# --- Linux tarballs (optional; built by ./package-linux.sh) ------------------
+set -- "$TMP/stayawake-win64.exe" "$TMP/stayawake-win32.exe"
+for f in "$OUT"/linux/stayawake-linux-*.tar.gz; do
+  [ -f "$f" ] || continue
+  cp "$f" "$TMP/"
+  set -- "$@" "$TMP/$(basename "$f")"
+  echo "==> staged linux asset: $(basename "$f")"
+done
+if [ "$#" -le 2 ]; then
+  echo "warning: no Linux tarballs staged (run ./package-linux.sh first)" >&2
+fi
+
 echo "==> uploading to release $TAG"
-gh release upload "$TAG" --clobber \
-  "$TMP/stayawake-win64.exe" \
-  "$TMP/stayawake-win32.exe"
+gh release upload "$TAG" --clobber "$@"
 echo "==> done"

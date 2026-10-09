@@ -11,6 +11,8 @@
   - 解压后按芯片选择对应的 `StayAwake.app` 双击启动。打包为菜单栏代理程序（`LSUIElement=true`），不弹终端、不进 Dock；左键单击菜单栏图标 = 切换开/关，右键 = 菜单。
 - Linux：`stayawake-linux-x86_64.tar.gz`（64 位）、`stayawake-linux-aarch64.tar.gz`（ARM64）
   - 解压出 `stayawake` 可执行文件直接运行（需要 GTK2 运行时 `libgtk2.0-0` 与 X11/libXtst）。
+  - 包内 `lid-guard/` 目录为**合盖行为组件**：运行其中的 `lid-guard/install.sh`（用户级，无需 root）后，
+    托盘菜单出现「合盖行为(接电源时)」子菜单，可切换插电合盖「不动作 / 睡眠」（详见 [linux/lid-guard/](linux/lid-guard/)）。
 
 ## 功能
 
@@ -78,6 +80,7 @@ chmod +x build-macos.sh build-linux.sh clean.sh
 # Linux（在 Linux 机器上运行，产物输出到 out/linux/<架构>/）
 ./build-linux.sh            # 本机架构（自动探测 x86_64 / i386 / aarch64 / arm）
 ./build-linux.sh aarch64    # 交叉编译到 ARM64（需对应跨编译器/RTL）
+./package-linux.sh          # 构建并打包 stayawake-linux-<arch>.tar.gz（含 lid-guard 组件）
 
 # macOS：默认同时构建两个架构目录（arm64 + x86_64），各自一个 .app
 ./build-macos.sh                 # 构建 out/macos/arm64/StayAwake.app 与 out/macos/x86_64/StayAwake.app
@@ -122,6 +125,7 @@ stayawake/
 ├── build.cmd               # Windows 构建脚本（默认 64 位；win32 / win64 可选）
 ├── build-macos.sh          # macOS 构建脚本（默认双架构目录；arm64 / x86_64 / universal 可选）
 ├── build-linux.sh          # Linux 构建脚本（默认本机架构；可指定 arch 交叉编译）
+├── package-linux.sh        # Linux 打包脚本（二进制 + lid-guard 组件 → tar.gz）
 ├── clean.sh                # 清理 out/ 下编译中间文件（保留最终二进制/.app）
 ├── release.sh              # 将 out/windows/<arch> 的 exe 上传到 GitHub Release（gh 需已登录）
 ├── assets/
