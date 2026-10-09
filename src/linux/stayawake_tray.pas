@@ -61,6 +61,7 @@ var
   AboutItem: PGtkWidget = nil;
   QuitItem: PGtkWidget = nil;
   AwakeHandler: guint = 0;
+  AutostartHandler: guint = 0;
   LidGuardHandler: guint = 0;
   LidSuspendHandler: guint = 0;
   LangAutoHandler: guint = 0;
@@ -364,11 +365,16 @@ begin
   if TrayMenu = nil then
     Exit;
   // Single checkable row for keep-awake; block the handler while syncing.
+  // gtk_check_menu_item_set_active also emits 'activate', which would
+  // re-enter TrayAutostartProc -> RefreshMenu (infinite recursion), so the
+  // autostart handler is blocked for the sync as well.
   g_signal_handler_block(TrayAwakeItem, AwakeHandler);
+  g_signal_handler_block(TrayAutostartItem, AutostartHandler);
   gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(TrayAwakeItem), AppActive);
   g_signal_handler_unblock(TrayAwakeItem, AwakeHandler);
   gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(TrayAutostartItem),
     IsAutoStartEnabled);
+  g_signal_handler_unblock(TrayAutostartItem, AutostartHandler);
 
   // Sync radios with blocked handlers: gtk_check_menu_item_set_active
   // emits 'toggled', which would re-write the config files.
@@ -469,7 +475,7 @@ begin
   g_signal_connect(StatusIcon, 'popup-menu', TGCallback(@TrayPopupSignal), nil);
   AwakeHandler := g_signal_connect(TrayAwakeItem, 'toggled',
     TGCallback(@TrayAwakeToggled), nil);
-  g_signal_connect(TrayAutostartItem, 'activate', TGCallback(@TrayAutostartProc), nil);
+  AutostartHandler := g_signal_connect(TrayAutostartItem, 'activate', TGCallback(@TrayAutostartProc), nil);
   LidGuardHandler := g_signal_connect(LidGuardItem, 'toggled',
     TGCallback(@LidGuardToggled), nil);
   LidSuspendHandler := g_signal_connect(LidSuspendItem, 'toggled',
