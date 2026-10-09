@@ -51,7 +51,7 @@
 | Linux | `src/linux/` | GTK2 `GtkStatusIcon` | 动态加载 `libX11.so.6` / `libXtst.so.6`（`XTestFakeMotionEvent`） |
 | macOS | `src/macos/` | Cocoa `NSStatusItem` + 菜单 | CoreGraphics `CGEventCreateMouseEvent` |
 
-- 开机自启：Windows 用 Windows Registry API（`TRegistry`）直接写入 `HKCU\...\CurrentVersion\Run`，不调用 `reg.exe`，因此启动时不产生控制台窗口、也无额外进程开销；Linux 写 `~/.config/autostart/stayawake.desktop`；macOS 写 `~/Library/LaunchAgents/com.stayawake.plist`。
+- 开机自启：Windows 用 Windows Registry API（`TRegistry`）直接写入 `HKCU\...\CurrentVersion\Run`，不调用 `reg.exe`，因此启动时不产生控制台窗口、也无额外进程开销；Linux 写 `~/.config/autostart/stayawake.desktop`；macOS 用 **SMAppService 登录项**（macOS 13+，即「系统设置 → 通用 → 登录项」，不写任何文件——管控机器上 `~/Library/LaunchAgents/` 常为 root 所有不可写入，plist 文件方案会静默失败；macOS < 13 回退到旧 plist 方案）。
   - 自启路径取自当前运行 exe 自身的位置（`ExpandFileName(ParamStr(0))`）。若移动了 exe，重新运行一次即可自动刷新注册表/启动项中的路径。
 - 单实例：Windows 用 `CreateMutexA`（命名互斥体）；Linux/macOS 用 `flock` 独占锁（进程异常退出时内核自动释放，不会留下僵尸锁）。
 - 合盖守卫（Linux）：`src/linux/lid-guard/` — 用户级 systemd 服务 + 托盘子菜单，模式文件 `~/.config/stayawake/lid-mode`（`block` / `allow`），详见上文「功能」与「限制与注意事项」。
