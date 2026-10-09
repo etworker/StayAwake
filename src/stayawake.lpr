@@ -24,10 +24,10 @@ function SetProcessDPIAware: BOOL; stdcall; external 'user32' name 'SetProcessDP
 
 begin
   {$IFDEF WINDOWS}
-  // Mirror the Rust version: declare the process DPI-aware before any mouse
-  // movement. Without this, on high-DPI displays Windows virtualizes
-  // coordinates and the 1px nudge rounds to zero physical movement, so the
-  // idle/screen-saver timer is never reset and the screen blanks anyway.
+  // Declare the process DPI-aware before any mouse movement. Without this,
+  // on high-DPI displays Windows virtualizes coordinates and the 1px nudge
+  // rounds to zero physical movement, so the idle/screen-saver timer is
+  // never reset and the screen blanks anyway.
   SetProcessDPIAware;
   {$ENDIF}
   if not AcquireSingleInstance then
