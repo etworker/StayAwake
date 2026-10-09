@@ -17,10 +17,10 @@
 ## 功能
 
 - 托盘图标：绿色 = 正在防止睡眠；灰色（两条竖杠）= 已暂停（系统可正常睡眠）。
-- 菜单（**左键或右键单击托盘图标均可打开**；点击图标本身不会静默改变任何行为）：
+- 菜单（Linux/Windows：**左键或右键单击托盘图标均可打开**，点击图标本身不会静默改变任何行为；macOS：左键 = 切换开/关，右键 = 菜单）：
   - **保持清醒 (Keep Awake)**：单条勾选项。勾选 = 阻止闲置睡眠；取消勾选 = 该睡就睡，实时生效。
   - **合盖行为(接电源时)** 子菜单（Linux）：「不动作(守卫拦截睡眠)」/「睡眠(系统默认)」二选一，免密码即时切换。
-  - **语言 / Language** 子菜单：跟随系统 / English / 中文，切换后全部菜单文案即时更新。
+  - **语言 / Language** 子菜单（Linux/Windows）：跟随系统 / English / 中文，切换后全部菜单文案即时更新。
   - **开机自启**：勾选开关（点击后立即反映真实状态）。
   - **关于 StayAwake / 退出**。
 - 启动即以「激活」状态运行（无命令行参数，开箱即用）。
@@ -46,7 +46,7 @@
 
 | 平台 | 目录 | 托盘实现 | 移动鼠标实现 |
 | ---- | ---- | -------- | ------------ |
-| Windows | `src/win/` | `Shell_NotifyIconA` + 隐藏消息窗口 + DIB 图标 | `SetCursorPos` |
+| Windows | `src/win/` | `Shell_NotifyIconW` + 隐藏消息窗口 + DIB 图标 | `SetCursorPos` |
 | Linux | `src/linux/` | GTK2 `GtkStatusIcon` | 动态加载 `libX11.so.6` / `libXtst.so.6`（`XTestFakeMotionEvent`） |
 | macOS | `src/macos/` | Cocoa `NSStatusItem` + 菜单 | CoreGraphics `CGEventCreateMouseEvent` |
 
@@ -223,7 +223,7 @@ stayawake/
 | ---- | ---- |
 | `stayawake_single.pas` | `AcquireSingleInstance`：单实例锁 |
 | `stayawake_mover.pas` | `StartMoverThread`：定时移动鼠标的线程（`NudgeMouse`）。Windows 额外导出 `WakeMoverThread`，供托盘在暂停/恢复时立即唤醒线程 |
-| `stayawake_tray.pas` | `TrayCreate`：托盘图标 + 右键菜单 + 事件循环 |
+| `stayawake_tray.pas` | `TrayCreate`：托盘图标 + 托盘菜单（左/右键均可打开，含语言子菜单）+ 事件循环 |
 | `stayawake_autostart.pas` | `EnsureAutoStart` / `IsAutoStartEnabled` / `DisableAutoStart`；Linux 额外导出 `EnableAutoStart`（GNOME 会把条目原地标记为 `X-GNOME-Autostart-enabled=false`，需要一个「即使存在也重新启用」的入口） |
 
 > 除上表列出的 5 个共有符号外，各平台按自身需要额外导出少量符号（如 Windows 的
