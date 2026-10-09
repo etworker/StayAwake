@@ -10,6 +10,16 @@ uses
 procedure StartMoverThread;
 procedure UpdateExecutionState;
 
+// Lid-close policy, mirroring the Linux tray semantics: while the mode file
+// says "block", hold a PreventSystemSleep assertion. powerd only honors that
+// assertion type while the machine is on AC power, so on battery the system
+// default applies (lid close sleeps) with no explicit power probing on our
+// side. On Apple Silicon the assertion also covers lid-close sleep; on older
+// systems it simply has no lid effect and nothing breaks.
+procedure LidGuardApply;
+procedure LidGuardSetMode(AMode: string);
+function LidGuardMode: string;
+
 implementation
 
 uses
@@ -52,6 +62,10 @@ var
   IOPMAssertionRelease: TIOPMAssertionRelease = nil;
   gAssertionID: cuint32 = 0;
   gAssertionOn: Boolean = False;
+
+  // Lid guard: separate PreventSystemSleep assertion.
+  gLidAssertionID: cuint32 = 0;
+  gLidAssertionOn: Boolean = False;
 
 procedure InitCoreGraphics;
 begin
@@ -125,6 +139,66 @@ begin
     GetProcAddress(PMHandle, 'IOPMAssertionRelease'));
 end;
 
+// ---- Lid-close policy -------------------------------------------------------
+// Mode file mirrors the Linux layout: 'block' = guard, 'allow' = default.
+
+function LidGuardConfigFile: string;
+var
+  Home: string;
+begin
+  Home := GetEnvironmentVariable('HOME');
+  if Home = '' then
+    Exit('');
+  Result := Home + '/Library/Application Support/stayawake/lid-mode';
+end;
+
+function LidGuardMode: string;
+begin
+  if ReadConfigValue(LidGuardConfigFile, 'allow') = 'block' then
+    Result := 'block'
+  else
+    Result := 'allow';
+end;
+
+procedure LidGuardSetMode(AMode: string);
+begin
+  if (AMode <> 'block') and (AMode <> 'allow') then
+    Exit;
+  WriteConfigValue(LidGuardConfigFile, AMode);
+  LidGuardApply;
+end;
+
+procedure LidGuardApply;
+var
+  reason, atype: CFStringRef;
+  res: cint;
+begin
+  if (IOPMAssertionCreateWithName = nil) or (IOPMAssertionRelease = nil) then
+    Exit;
+  if (LidGuardMode = 'block') and (not gLidAssertionOn) then
+  begin
+    reason := CFStringCreateWithCString(nil,
+      PAnsiChar('StayAwake lid guard'), kCFStringEncodingUTF8);
+    atype := CFStringCreateWithCString(nil, PAnsiChar('PreventSystemSleep'),
+      kCFStringEncodingUTF8);
+    res := -1;
+    if (reason <> nil) and (atype <> nil) then
+      res := IOPMAssertionCreateWithName(atype, 255, reason, gLidAssertionID);
+    if reason <> nil then
+      CFRelease(reason);
+    if atype <> nil then
+      CFRelease(atype);
+    gLidAssertionOn := res = 0;
+  end
+  else if (LidGuardMode <> 'block') and gLidAssertionOn then
+  begin
+    if gLidAssertionID <> 0 then
+      IOPMAssertionRelease(gLidAssertionID);
+    gLidAssertionID := 0;
+    gLidAssertionOn := False;
+  end;
+end;
+
 procedure UpdateExecutionState;
 var
   reason, atype: CFStringRef;
@@ -182,6 +256,7 @@ begin
   InitCoreGraphics;
   InitPowerManagement;
   UpdateExecutionState;
+  LidGuardApply;
   with TMoverThread.Create(False) do
     FreeOnTerminate := True;
 end;

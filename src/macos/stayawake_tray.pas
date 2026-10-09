@@ -29,6 +29,8 @@ type
   TStayAwakeApp = objcclass(NSObject)
   public
     procedure toggleAwake(sender: id); message 'toggleAwake:';
+    procedure lidGuard(sender: id); message 'lidGuard:';
+    procedure lidSuspend(sender: id); message 'lidSuspend:';
     procedure toggleAutostart(sender: id); message 'toggleAutostart:';
     procedure langAuto(sender: id); message 'langAuto:';
     procedure langEn(sender: id); message 'langEn:';
@@ -45,6 +47,9 @@ const
   // All user-visible strings, per language. Menu labels state the action
   // and its consequence so each item is unambiguous. Keep 1:1 with Linux/Win.
   SAwake: TStrMap = ('Keep Awake (block idle sleep)', '保持清醒(阻止闲置睡眠)');
+  SLidTitle: TStrMap = ('Lid Close on AC Power', '合盖行为(接电源时)');
+  SLidBlock: TStrMap = ('Do Nothing (Guard blocks sleep)', '不动作(守卫拦截睡眠)');
+  SLidAllow: TStrMap = ('Suspend (system default)', '睡眠(系统默认)');
   SAutoStart: TStrMap = ('Run at Login', '开机自启');
   SLangTitle: TStrMap = ('Language', '语言 / Language');
   SLangAuto: TStrMap = ('Follow System', '跟随系统');
@@ -56,6 +61,9 @@ const
 var
   StatusItem: NSStatusItem = nil;
   MenuAwake: NSMenuItem = nil;
+  MenuLid: NSMenuItem = nil;
+  LidGuardItem: NSMenuItem = nil;
+  LidSuspendItem: NSMenuItem = nil;
   MenuAutostart: NSMenuItem = nil;
   MenuLang: NSMenuItem = nil;
   LangAutoItem: NSMenuItem = nil;
@@ -65,7 +73,7 @@ var
   QuitItem: NSMenuItem = nil;
   AppDelegate: TStayAwakeApp = nil;
 
-// ---- Config (language choice), mirrors the Linux tray ----------------------
+// ---- Config paths (read/write helpers come from stayawake_common) ----------
 
 function ConfigDir: string;
 var
@@ -80,56 +88,6 @@ end;
 function LangFilePath: string;
 begin
   Result := ConfigDir + '/stayawake/lang';
-end;
-
-function ReadConfigValue(FileName, DefValue: string): string;
-var
-  sl: TStringList;
-begin
-  Result := DefValue;
-  if (FileName = '') or (not FileExists(FileName)) then
-    Exit;
-  sl := TStringList.Create;
-  try
-    try
-      sl.LoadFromFile(FileName);
-      if sl.Count > 0 then
-        Result := Trim(sl[0]);
-    except
-      on E: Exception do
-        ;
-    end;
-  finally
-    sl.Free;
-  end;
-end;
-
-procedure WriteConfigValue(FileName, Value: string);
-var
-  sl: TStringList;
-begin
-  if FileName = '' then
-    Exit;
-  if not ForceDirectories(ExtractFilePath(FileName)) then
-    Exit;
-  sl := TStringList.Create;
-  try
-    sl.Add(Value);
-    try
-      sl.SaveToFile(FileName);
-    except
-      // Config must not crash the tray; the setting stays unchanged.
-      on E: Exception do
-        ;
-    end;
-  finally
-    sl.Free;
-  end;
-end;
-
-function CurrentLangStored: string;
-begin
-  Result := LowerCase(ReadConfigValue(LangFilePath, ''));
 end;
 
 function SystemLangCode: string;
@@ -152,6 +110,11 @@ begin
         Result := Copy(Result, 1, Pos('-', Result) - 1);
     end;
   end;
+end;
+
+function CurrentLangStored: string;
+begin
+  Result := LowerCase(ReadConfigValue(LangFilePath, ''));
 end;
 
 function CurrentLang: TTrayLang;
@@ -179,8 +142,13 @@ end;
 procedure TraySetVisual; forward;
 
 function MakeStatusImage: NSImage;
+const
+  // 36 px @ 18 pt = 2x; menu-bar status items draw at ~18 pt, so this stays
+  // crisp on Retina instead of being scaled up from a 32 px bitmap.
+  ImgPx = 36;
+  ImgPt = 18;
 var
-  pixels: TIconPixels;
+  Pixels: array of Byte;
   cs: CGColorSpaceRef;
   data: CFDataRef;
   provider: CGDataProviderRef;
@@ -188,24 +156,28 @@ var
   sz: NSSize;
 begin
   Result := nil;
-  GenerateTrayIconPixels(AppActive, pixels);
+  SetLength(Pixels, ImgPx * ImgPx * 4);
+  GenerateIconPixels(ImgPx, AppActive, @Pixels[0]);
   cs := CGColorSpaceCreateDeviceRGB;
   if cs = nil then
     Exit;
   // CFDataCreate copies the bytes, so the on-stack pixel buffer is safe even
   // after this function returns and the image is drawn lazily later.
-  data := CFDataCreate(nil, @pixels, SizeOf(pixels));
+  data := CFDataCreate(nil, @Pixels[0], Length(Pixels));
   provider := nil;
   cg := nil;
   if data <> nil then
     provider := CGDataProviderCreateWithCFData(data);
   if provider <> nil then
-    cg := CGImageCreate(ICON_SIZE, ICON_SIZE, 8, 32, ICON_SIZE * 4,
+    cg := CGImageCreate(ImgPx, ImgPx, 8, 32, ImgPx * 4,
       cs, kCGImageAlphaPremultipliedLast, provider, nil, 0, kCGRenderingIntentDefault);
   if (provider <> nil) and (cg <> nil) then
   begin
-    sz := NSMakeSize(ICON_SIZE, ICON_SIZE);
+    sz := NSMakeSize(ImgPt, ImgPt);
     Result := NSImage(NSImage.alloc).initWithCGImage_size(cg, sz);
+    // Single-color artwork: as a template the system re-colors it for dark
+    // and light menu bars; open vs closed eye distinguishes the state.
+    Result.setTemplate(True);
   end;
   if cs <> nil then
     CGColorSpaceRelease(cs);
@@ -248,6 +220,9 @@ begin
   // setState does not fire actions, so no handler blocking is needed.
   SetCheckState(MenuAwake, AppActive);
   SetCheckState(MenuAutostart, IsAutoStartEnabled);
+  // Lid-close radio group (block vs system default).
+  SetCheckState(LidGuardItem, LidGuardMode = 'block');
+  SetCheckState(LidSuspendItem, LidGuardMode <> 'block');
   // Language radio group (managed manually; auto-enables is off).
   Stored := CurrentLangStored;
   SetCheckState(LangAutoItem, (Stored <> 'en') and (Stored <> 'zh'));
@@ -262,6 +237,9 @@ begin
   if StatusItem = nil then
     Exit;
   MenuAwake.setTitle(NSString.stringWithUTF8String(PChar(L(SAwake))));
+  MenuLid.setTitle(NSString.stringWithUTF8String(PChar(L(SLidTitle))));
+  LidGuardItem.setTitle(NSString.stringWithUTF8String(PChar(L(SLidBlock))));
+  LidSuspendItem.setTitle(NSString.stringWithUTF8String(PChar(L(SLidAllow))));
   MenuAutostart.setTitle(NSString.stringWithUTF8String(PChar(L(SAutoStart))));
   MenuLang.setTitle(NSString.stringWithUTF8String(PChar(L(SLangTitle))));
   LangAutoItem.setTitle(NSString.stringWithUTF8String(PChar(L(SLangAuto))));
@@ -283,6 +261,20 @@ begin
   // Checked = prevent idle sleep; unchecked = normal system sleep policy.
   AppActive := not AppActive;
   UpdateExecutionState;
+  TraySetVisual;
+end;
+
+procedure TStayAwakeApp.lidGuard(sender: id);
+begin
+  // Checked = lid close on AC does nothing (guard holds a sleep assertion).
+  LidGuardSetMode('block');
+  TraySetVisual;
+end;
+
+procedure TStayAwakeApp.lidSuspend(sender: id);
+begin
+  // System default: closing the lid sleeps as configured by macOS.
+  LidGuardSetMode('allow');
   TraySetVisual;
 end;
 
@@ -322,7 +314,8 @@ begin
       APP_NAME + ' ' + APP_VERSION + #10#10 +
       'Prevents idle sleep by moving the mouse every ' +
       IntToStr(INTERVAL_SECS) + ' seconds.' + #10#10 +
-      '防止系统因「闲置」而睡眠 / 熄屏 / 锁屏。';
+      '防止系统因「闲置」而睡眠 / 熄屏 / 锁屏。' + #10 +
+      '合盖行为(接电源时)可在托盘菜单切换(Apple Silicon)。';
   alert.setInformativeText(NSString.stringWithUTF8String(PChar(info)));
   alert.addButtonWithTitle(NSString.stringWithUTF8String('OK'));
   alert.runModal;
@@ -346,7 +339,7 @@ end;
 procedure TrayCreate;
 var
   app: NSApplication;
-  menu, langSub: NSMenu;
+  menu, langSub, lidSub: NSMenu;
   img: NSImage;
 begin
   app := NSApplication.sharedApplication;
@@ -373,6 +366,17 @@ begin
   // unchecked = let the system sleep normally.
   MenuAwake := NewMenuItem(L(SAwake), objcselector('toggleAwake:'));
 
+  // Lid-close policy on AC power (Apple Silicon honors PreventSystemSleep).
+  lidSub := NSMenu.alloc.initWithTitle(NSString.stringWithUTF8String('Lid'));
+  lidSub.setAutoenablesItems(False);
+  LidGuardItem := NewMenuItem(L(SLidBlock), objcselector('lidGuard:'));
+  LidSuspendItem := NewMenuItem(L(SLidAllow), objcselector('lidSuspend:'));
+  lidSub.addItem(LidGuardItem);
+  lidSub.addItem(LidSuspendItem);
+  MenuLid := NewMenuItem(L(SLidTitle), nil);
+  MenuLid.setSubmenu(lidSub);
+  lidSub.release;
+
   MenuAutostart := NewMenuItem(L(SAutoStart), objcselector('toggleAutostart:'));
 
   // Language switcher (persisted, applies immediately).
@@ -393,6 +397,7 @@ begin
 
   menu.addItem(MenuAwake);
   menu.addItem(NSMenuItem.separatorItem);
+  menu.addItem(MenuLid);
   menu.addItem(MenuAutostart);
   menu.addItem(NSMenuItem.separatorItem);
   menu.addItem(MenuLang);
@@ -406,6 +411,9 @@ begin
   // outer allocations need balancing here.
   menu.release;
   MenuAwake.release;
+  MenuLid.release;
+  LidGuardItem.release;
+  LidSuspendItem.release;
   MenuAutostart.release;
   MenuLang.release;
   LangAutoItem.release;

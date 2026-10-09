@@ -16,17 +16,18 @@
 
 ## 功能
 
-- 托盘图标：绿色 = 正在防止睡眠；灰色（两条竖杠）= 已暂停（系统可正常睡眠）。
+- 托盘图标：**眼睛图案**——睁眼（绿色）= 正在防止睡眠；闭眼（灰色）= 已暂停（系统可正常睡眠）。macOS 顶栏以 template 方式渲染，自动适配深色 / 浅色菜单栏。
 - 菜单（三个平台一致：**左键或右键单击托盘图标均可打开**，点击图标本身不会静默改变任何行为；macOS 点击菜单栏图标即弹出菜单）：
   - **保持清醒 (Keep Awake)**：单条勾选项。勾选 = 阻止闲置睡眠；取消勾选 = 该睡就睡，实时生效。
-  - **合盖行为(接电源时)** 子菜单（Linux）：「不动作(守卫拦截睡眠)」/「睡眠(系统默认)」二选一，免密码即时切换。
+  - **合盖行为(接电源时)** 子菜单（Linux / macOS）：「不动作(守卫拦截睡眠)」/「睡眠(系统默认)」二选一，免密码即时切换。
   - **语言 / Language** 子菜单（三个平台）：跟随系统 / English / 中文，切换后全部菜单文案即时更新；偏好保存在 `~/.config/stayawake/lang`（Linux）、`%APPDATA%\stayawake\lang`（Windows）、`~/Library/Application Support/stayawake/lang`（macOS）。
   - **开机自启**：勾选开关（点击后立即反映真实状态）。
   - **关于 StayAwake / 退出**。
 - 启动即以「激活」状态运行（无命令行参数，开箱即用）。
 - **单实例**：同一用户下只允许运行一个实例（Windows 用命名互斥体；Linux/macOS 用 `flock` 文件锁，优先位于 `$XDG_RUNTIME_DIR`，否则退回 `/tmp` 下带 UID 的文件名，因此多用户机器上互不干扰）。
 - **合盖行为（Linux）**：托盘菜单新增「Lid Close on AC」子菜单，可在 **Do Nothing (Guard)** 与 **Suspend** 之间切换插电时的合盖行为。守卫以用户级 systemd 服务运行（**无需 root**），直接读取内核（`/sys`）的电源状态，因此**免疫 UPower 误判**——即使 GNOME 误以为在使用电池，插电合盖也不会睡眠。电池合盖始终维持系统默认。详见 [src/linux/lid-guard/](src/linux/lid-guard/)。
-- **exe 图标**：Windows 可执行文件内置图标（绿色圆形，与托盘一致，含 16/32/48/64/256 多尺寸）。
+- **合盖行为（macOS，Apple Silicon）**：同一子菜单切换。实现为 IOKit 的 `PreventSystemSleep` 断言——**powerd 只在接电源时采纳该断言**，因此电池合盖自动维持系统默认，无需自行探测电源状态；偏好保存在 `~/Library/Application Support/stayawake/lid-mode`。Intel Mac 上该断言对合盖无效（系统限制），菜单选项不报错但不起作用。
+- **exe 图标**：Windows 可执行文件内置图标（绿色睁眼图案，与托盘一致，含 16/32/48/64/256 多尺寸）。
 
 ## 限制与注意事项
 
