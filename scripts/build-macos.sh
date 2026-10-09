@@ -73,16 +73,21 @@ build_macos_arch() {
   echo "==> compiling macOS slice: -P$fpcpu (dir $arch)"
   if [ "$arch" = "x86_64" ] && ! command -v ppcx64 >/dev/null 2>&1; then
     resolve_x86_64
-    if ! "$CROSS_COMPILER" -Mobjfpc -O2 "${CROSS_ARGS[@]}" -Fucommon -Fumacos \
+    if ! "$CROSS_COMPILER" -Mobjfpc -O2 -Xs "${CROSS_ARGS[@]}" -Fucommon -Fumacos \
         -FU"$units" -FE"$macdir" -ostayawake stayawake.lpr; then
       echo "!! failed to build arch 'x86_64' with $CROSS_COMPILER" >&2
       return 1
     fi
-  elif ! "$FPC" -Mobjfpc -O2 -P"$fpcpu" -Fucommon -Fumacos -FU"$units" -FE"$macdir" -ostayawake stayawake.lpr; then
+  elif ! "$FPC" -Mobjfpc -O2 -Xs -P"$fpcpu" -Fucommon -Fumacos -FU"$units" -FE"$macdir" -ostayawake stayawake.lpr; then
     echo "!! failed to build arch '$arch' (is its RTL + compiler installed?)" >&2
     return 1
   fi
   chmod +x "$macdir/stayawake"
+  # -Xs has no effect on the Darwin link path; strip symbols explicitly
+  # (releases only - cuts the binary roughly 40%).
+  if command -v strip >/dev/null 2>&1; then
+    strip "$macdir/stayawake"
+  fi
   # Wrap into a .app bundle so double-clicking does not open Terminal.
   # LSUIElement=true => menu-bar (agent) app, no Dock icon.
   cat > "$app/Contents/Info.plist" <<PLIST
@@ -135,6 +140,8 @@ case "$MODE" in
       "$OUT/arm64/StayAwake.app/Contents/MacOS/stayawake" \
       "$OUT/x86_64/StayAwake.app/Contents/MacOS/stayawake"
     chmod +x "$macdir/stayawake"
+    # Slices were already stripped per-arch; the merged fat binary needs no
+    # extra pass (lipo output keeps the stripped state).
     cp "$OUT/arm64/StayAwake.app/Contents/Info.plist" "$app/Contents/Info.plist"
     echo "==> universal binary:"; lipo -info "$macdir/stayawake"
     echo "==> built: $app"

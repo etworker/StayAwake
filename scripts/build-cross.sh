@@ -60,7 +60,7 @@ build_win() { # <cpu> <target-os> <os-rtl-dir> <cpu-rtl-dir> <out-subdir>
   dest="$OUT/$outdir"
   mkdir -p "$dest/units"
   echo "==> building Windows $tos ($cpu) -> $dest"
-  ( cd "$SRC" && fpc -P"$cpu" -T"$tos" -Mobjfpc -O2 -Sg \
+  ( cd "$SRC" && fpc -P"$cpu" -T"$tos" -Mobjfpc -O2 -Xs -Sg \
       -Fi"$RTL/$osdir" -Fi"$RTL/$archdir" $INC \
       -Fucommon -Fuwin \
       -Fu"$RTL/$osdir" -Fu"$RTL/$archdir" -Fu"$RTL/win" -Fu"$RTL/inc" \

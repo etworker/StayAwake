@@ -55,7 +55,7 @@ pushd "%SRC%"
 if defined FPC_EXE (
   "!FPC_EXE!" -Mobjfpc -O2 -Fucommon -Fuwin -FU"%OUT%\units" -FE"%OUT%" stayawake.lpr
 ) else (
-  fpc -Mobjfpc -O2 -Fucommon -Fuwin -FU"%OUT%\units" -FE"%OUT%" stayawake.lpr
+  fpc -Mobjfpc -O2 -Xs -Fucommon -Fuwin -FU"%OUT%\units" -FE"%OUT%" stayawake.lpr
 )
 set RC=%errorlevel%
 popd

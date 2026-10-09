@@ -38,4 +38,4 @@ fi
 DEST="$OUT/$ARCH"
 mkdir -p "$DEST/units"
 cd "$SRC"
-exec "$FPC" -Mobjfpc -O2 -P"$FPCARCH" -Fucommon -Fulinux -FU"$DEST/units" -FE"$DEST" stayawake.lpr
+exec "$FPC" -Mobjfpc -O2 -Xs -P"$FPCARCH" -Fucommon -Fulinux -FU"$DEST/units" -FE"$DEST" stayawake.lpr
