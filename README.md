@@ -23,8 +23,8 @@
   - **语言 / Language** 子菜单：跟随系统 / English / 中文，切换后全部菜单文案即时更新。
   - **开机自启**：勾选开关（点击后立即反映真实状态）。
   - **关于 StayAwake / 退出**。
-- 启动参数 `--start-active`：以「激活」状态启动（**默认即为激活状态**，此参数可显式确保）。
-- **单实例**：同一用户下只允许运行一个实例（Windows 用命名互斥体；Linux/macOS 用 `/tmp` 下的 `flock` 文件锁）。
+- 启动即以「激活」状态运行（无命令行参数，开箱即用）。
+- **单实例**：同一用户下只允许运行一个实例（Windows 用命名互斥体；Linux/macOS 用 `flock` 文件锁，优先位于 `$XDG_RUNTIME_DIR`，否则退回 `/tmp` 下带 UID 的文件名，因此多用户机器上互不干扰）。
 - **合盖行为（Linux）**：托盘菜单新增「Lid Close on AC」子菜单，可在 **Do Nothing (Guard)** 与 **Suspend** 之间切换插电时的合盖行为。守卫以用户级 systemd 服务运行（**无需 root**），直接读取内核（`/sys`）的电源状态，因此**免疫 UPower 误判**——即使 GNOME 误以为在使用电池，插电合盖也不会睡眠。电池合盖始终维持系统默认。详见 [linux/lid-guard/](linux/lid-guard/)。
 - **exe 图标**：Windows 可执行文件内置图标（绿色圆形，与托盘一致，含 16/32/48/64/256 多尺寸）。
 
@@ -63,6 +63,7 @@
 - Windows：32 位与 64 位各需对应的 FPC 工具链（`i386-win32` / `x86_64-win64`，两者都装则脚本自动按目标选择）。
 - Linux：需已安装 GTK2 运行时（`libgtk2.0-0` 等）；编译不依赖 GTK 头文件/静态库（FPC 的 gtk2 单元在运行时动态加载）。
 - macOS：需 Xcode Command Line Tools（链接 Cocoa 框架）。
+- Linux → Windows 交叉编译另需 `gcc` 与（32 位目标）一份 i386 版 FPC，见下方「交叉编译前置条件」。
 
 ## 编译
 
@@ -74,8 +75,74 @@
 build.cmd            :: Windows（默认 64 位；win32 / win64 可选）
 ```
 
+在 Linux 上交叉编译出 Windows 产物（无需 Windows 机器）：
+
 ```sh
-chmod +x build-macos.sh build-linux.sh clean.sh
+./build-cross.sh            # 同时构建 win64 + win32
+./build-cross.sh win64      # 仅 64 位
+./build-cross.sh win32      # 仅 32 位
+# 产物：out/windows/x86_64/stayawake.exe、out/windows/i386/stayawake.exe
+```
+
+> **Linux → Windows 交叉编译前置条件**（以 Debian/Ubuntu 为例）
+>
+> 1. 基础工具链：`apt-get install fpc fpc-source binutils-mingw-w64 gcc`
+>    - `fpc-source`：Debian 的 `fpc` 不自带 Win32/Win64 的 RTL，脚本用这里的 RTL 源码现场构建所需单元。
+>    - `gcc`：**必需**。`windres` 编译 `.rc` 资源时会调用 `gcc` 做预处理，缺失会直接报
+>      `sh: 1: gcc: not found` → `preprocessing failed` → `Error while compiling resources`，
+>      win64 / win32 两个目标都编不出来。（`gcc` 可能被其它包顺带装上，但不应依赖这点，显式安装更稳。）
+>    - `binutils-mingw-w64`：mingw 的 binutils 命名与 FPC 期望不同，脚本会尝试在 `PATH` 中建立别名
+>      （`x86_64-win64-ld` / `i386-win32-ld` / `*-windres` 等）。
+>
+> 2. **仅当需要 32 位目标（win32）时**，还需一份 i386 版 FPC（`ppc386`）。Debian 多架构下这一步
+>    有三处坑，照下面顺序做即可：
+>
+>    ```sh
+>    dpkg --add-architecture i386 && apt-get update
+>    apt-get download fp-compiler-3.2.2:i386
+>    dpkg -i --force-depends fp-compiler-3.2.2_3.2.2+dfsg-20_i386.deb
+>    ln -sf /usr/lib/i386-linux-gnu/fpc/3.2.2/ppc386 /usr/local/bin/ppc386
+>    ```
+>
+>    然后**把两套架构的单元搜索路径都补进 `/etc/fpc-3.2.2.cfg`**（见下面第三个坑，不补会连 amd64
+>    目标都编不动；用 `#ifdef` 分架构，重复追加无害）：
+>
+>    ```sh
+>    cat >> /etc/fpc-3.2.2.cfg <<'EOF'
+>
+>    # --- multiarch: keep both unit search roots so ppcx64 and ppc386 both resolve RTL ---
+>    #ifdef cpux86_64
+>    -Fu/usr/lib/x86_64-linux-gnu/fpc/$fpcversion/units/$fpctarget
+>    -Fu/usr/lib/x86_64-linux-gnu/fpc/$fpcversion/units/$fpctarget/*
+>    -Fu/usr/lib/x86_64-linux-gnu/fpc/$fpcversion/units/$fpctarget/rtl
+>    #endif
+>    #ifdef cpui386
+>    -Fu/usr/lib/i386-linux-gnu/fpc/$fpcversion/units/$fpctarget
+>    -Fu/usr/lib/i386-linux-gnu/fpc/$fpcversion/units/$fpctarget/*
+>    -Fu/usr/lib/i386-linux-gnu/fpc/$fpcversion/units/$fpctarget/rtl
+>    #endif
+>    EOF
+>    ```
+>
+>    三处坑：
+>    - **`binutils` 与 `binutils:i386` 互相 `Conflicts`**，装不成「既有 amd64 又有 i386 的 binutils」。
+>      所以不能走 `apt-get install fp-compiler-3.2.2:i386`——它依赖未限定架构的 `binutils`，apt 会
+>      一路解到 `binutils:i386`，然后因冲突把整个安装判为不可满足（`E: Unable to correct problems,
+>      you have held broken packages`）。i386 的 FPC 其实**用 amd64 的 binutils 就能工作**，因此直接用
+>      `dpkg --force-depends` 单独装这个 `.deb` 即可绕开依赖解算。（装完 `dpkg --audit` 应为空。）
+>    - **`ppc386` 不在 `PATH` 里**：该 `.deb` 不会把 `ppc386` 放进 `/usr/bin`（那里的 alternative 归
+>      amd64 包所有），二进制实际在 `/usr/lib/i386-linux-gnu/fpc/3.2.2/ppc386`，故需手动 `ln -sf`。
+>    - **共享的 `/etc/fpc-3.2.2.cfg` 会被写坏**：两个 `fp-compiler-3.2.2` 通过 `update-alternatives`
+>      共用同一个 `/usr/bin/fpc` 与 `/etc/fpc-3.2.2.cfg`。最后装 i386 的那个，会把配置里的单元搜索
+>      根路径整段改成 `/usr/lib/i386-linux-gnu/fpc/...`，于是 **`ppcx64` 找不到自己的 RTL**，连 amd64
+>      的原生编译都会报 `Fatal: Can't find unit system`。上面那段按 `#ifdef cpu...` 把两种架构的路径
+>      都写回即可（`-Fu` 是累加的，多写不冲突）。
+>
+>    装完确认：`which ppcx64 ppc386`（`/usr/bin/ppcx64` 与 `/usr/local/bin/ppc386`），
+>    `dpkg --audit` 无输出，且 amd64 与 i386 各编一个 hello world 都通过。
+
+```sh
+chmod +x build-macos.sh build-linux.sh build-cross.sh clean.sh
 
 # Linux（在 Linux 机器上运行，产物输出到 out/linux/<架构>/）
 ./build-linux.sh            # 本机架构（自动探测 x86_64 / i386 / aarch64 / arm）
@@ -126,6 +193,7 @@ stayawake/
 ├── build-macos.sh          # macOS 构建脚本（默认双架构目录；arm64 / x86_64 / universal 可选）
 ├── build-linux.sh          # Linux 构建脚本（默认本机架构；可指定 arch 交叉编译）
 ├── package-linux.sh        # Linux 打包脚本（二进制 + lid-guard 组件 → tar.gz）
+├── build-cross.sh          # Linux → Windows 交叉编译脚本（win64 / win32 / both）
 ├── clean.sh                # 清理 out/ 下编译中间文件（保留最终二进制/.app）
 ├── release.sh              # 将 out/windows/<arch> 的 exe 上传到 GitHub Release（gh 需已登录）
 ├── assets/
@@ -148,11 +216,16 @@ stayawake/
     └── macos/<arch>/        # macOS：arm64/ 与 x86_64/ 各一个 StayAwake.app（+ 同目录 units/）
 ```
 
-每个平台目录内四个单元，接口一致，主程序无需感知平台差异：
+每个平台目录内四个单元，结构一致，主程序只依赖各平台共有的 5 个符号
+（`AcquireSingleInstance` / `UpdateExecutionState` / `EnsureAutoStart` /
+`StartMoverThread` / `TrayCreate`），无需感知平台差异：
 
 | 单元 | 职责 |
 | ---- | ---- |
 | `stayawake_single.pas` | `AcquireSingleInstance`：单实例锁 |
-| `stayawake_mover.pas` | `StartMoverThread`：定时移动鼠标的线程（`NudgeMouse`） |
+| `stayawake_mover.pas` | `StartMoverThread`：定时移动鼠标的线程（`NudgeMouse`）。Windows 额外导出 `WakeMoverThread`，供托盘在暂停/恢复时立即唤醒线程 |
 | `stayawake_tray.pas` | `TrayCreate`：托盘图标 + 右键菜单 + 事件循环 |
-| `stayawake_autostart.pas` | `EnsureAutoStart` / `IsAutoStartEnabled` / `DisableAutoStart` |
+| `stayawake_autostart.pas` | `EnsureAutoStart` / `IsAutoStartEnabled` / `DisableAutoStart`；Linux 额外导出 `EnableAutoStart`（GNOME 会把条目原地标记为 `X-GNOME-Autostart-enabled=false`，需要一个「即使存在也重新启用」的入口） |
+
+> 除上表列出的 5 个共有符号外，各平台按自身需要额外导出少量符号（如 Windows 的
+> `WakeMoverThread`、Linux 的 `EnableAutoStart`），主程序不引用它们。

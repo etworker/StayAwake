@@ -55,7 +55,10 @@ procedure NudgeMouse;
 var
   p: TPoint;
 begin
-  GetCursorPos(p);
+  // On failure p would hold uninitialised stack data and the nudge would
+  // teleport the cursor to a random spot. Skip this tick instead.
+  if not GetCursorPos(p) then
+    Exit;
   SetCursorPos(p.X + 1, p.Y);
   Sleep(50);
   SetCursorPos(p.X, p.Y);

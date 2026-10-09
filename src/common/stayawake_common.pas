@@ -16,29 +16,36 @@ type
 var
   AppActive: Boolean;
 
-procedure GenerateIconPixels(Active: Boolean; var Pixels: TIconPixels);
+// Draw the tray/icon artwork into a caller-supplied RGBA buffer of
+// Size x Size. Shared by the runtime tray (Size = ICON_SIZE) and
+// tools/gen_icon.pas so the two can never drift apart.
+procedure GenerateIconPixels(Size: Integer; Active: Boolean; Pixels: PByte);
+
+// Convenience wrapper for the fixed-size tray icon.
+procedure GenerateTrayIconPixels(Active: Boolean; var Pixels: TIconPixels);
 
 implementation
 
-procedure GenerateIconPixels(Active: Boolean; var Pixels: TIconPixels);
+procedure GenerateIconPixels(Size: Integer; Active: Boolean; Pixels: PByte);
 var
   x, y: Integer;
-  dx, dy, px, py, dist, t: Double;
+  dx, dy, px, py, dist, t, Radius: Double;
   r, g, b, c: Double;
   idx: Integer;
 begin
-  for y := 0 to ICON_SIZE - 1 do
-    for x := 0 to ICON_SIZE - 1 do
+  Radius := (Size / 2) - 1.0;
+  for y := 0 to Size - 1 do
+    for x := 0 to Size - 1 do
     begin
-      dx := x - (ICON_SIZE / 2) + 0.5;
-      dy := y - (ICON_SIZE / 2) + 0.5;
+      dx := x - (Size / 2) + 0.5;
+      dy := y - (Size / 2) + 0.5;
       dist := Sqrt(dx * dx + dy * dy);
-      idx := (y * ICON_SIZE + x) * 4;
-      if dist <= (ICON_SIZE / 2) - 1.0 then
+      idx := (y * Size + x) * 4;
+      if dist <= Radius then
       begin
         if Active then
         begin
-          t := dist / ((ICON_SIZE / 2) - 1.0);
+          t := dist / Radius;
           r := 50.0 * (1.0 - t) + 30.0;
           g := 220.0 * (1.0 - t) + 120.0;
           b := 50.0 * (1.0 - t) + 30.0;
@@ -49,8 +56,8 @@ begin
         end
         else
         begin
-          px := x - (ICON_SIZE / 2) + 0.5;
-          py := y - (ICON_SIZE / 2) + 0.5;
+          px := dx;
+          py := dy;
           if ((px >= -4.0) and (px <= -1.0) and (py >= -6.0) and (py <= 6.0)) or
              ((px >= 1.0) and (px <= 4.0) and (py >= -6.0) and (py <= 6.0)) then
           begin
@@ -61,7 +68,7 @@ begin
           end
           else
           begin
-            t := dist / ((ICON_SIZE / 2) - 1.0);
+            t := dist / Radius;
             c := 100.0 * (1.0 - t) + 60.0;
             Pixels[idx] := Round(c);
             Pixels[idx + 1] := Round(c);
@@ -78,6 +85,11 @@ begin
         Pixels[idx + 3] := 0;
       end;
     end;
+end;
+
+procedure GenerateTrayIconPixels(Active: Boolean; var Pixels: TIconPixels);
+begin
+  GenerateIconPixels(ICON_SIZE, Active, @Pixels[0]);
 end;
 
 end.

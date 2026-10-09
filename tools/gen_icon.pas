@@ -3,41 +3,11 @@ program gen_icon;
 {$mode objfpc}{$H+}
 
 uses
-  SysUtils, Classes;
+  SysUtils, Classes,
+  stayawake_common;
 
 const
   Sizes: array[0..4] of Integer = (16, 32, 48, 64, 256);
-
-procedure FillPixels(Size: Integer; Pixels: PByte);
-var
-  x, y: Integer;
-  dx, dy, dist, t: Double;
-  idx: Integer;
-begin
-  for y := 0 to Size - 1 do
-    for x := 0 to Size - 1 do
-    begin
-      dx := x - (Size / 2) + 0.5;
-      dy := y - (Size / 2) + 0.5;
-      dist := Sqrt(dx * dx + dy * dy);
-      idx := (y * Size + x) * 4;
-      if dist <= (Size / 2) - 1.0 then
-      begin
-        t := dist / ((Size / 2) - 1.0);
-        Pixels[idx] := Round(50.0 * (1.0 - t) + 30.0);
-        Pixels[idx + 1] := Round(220.0 * (1.0 - t) + 120.0);
-        Pixels[idx + 2] := Round(50.0 * (1.0 - t) + 30.0);
-        Pixels[idx + 3] := 255;
-      end
-      else
-      begin
-        Pixels[idx] := 0;
-        Pixels[idx + 1] := 0;
-        Pixels[idx + 2] := 0;
-        Pixels[idx + 3] := 0;
-      end;
-    end;
-end;
 
 procedure W2(f: TStream; v: Word);
 begin
@@ -97,6 +67,11 @@ begin
   else
     OutPath := 'keep_awake.ico';
 
+  // Create the destination directory when missing so the build works from a
+  // clean checkout (assets/ is git-ignored and therefore absent).
+  if ExtractFilePath(OutPath) <> '' then
+    ForceDirectories(ExtractFilePath(OutPath));
+
   fs := TFileStream.Create(OutPath, fmCreate);
   try
     W2(fs, 0);
@@ -123,7 +98,7 @@ begin
     begin
       Size := Sizes[i];
       SetLength(Pixels, Size * Size * 4);
-      FillPixels(Size, @Pixels[0]);
+      GenerateIconPixels(Size, True, @Pixels[0]);
       WriteImage(fs, Size, @Pixels[0]);
     end;
   finally

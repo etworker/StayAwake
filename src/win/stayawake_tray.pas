@@ -201,7 +201,7 @@ var
 begin
   if TrayHwnd = 0 then
     Exit;
-  GenerateIconPixels(AppActive, pixels);
+  GenerateTrayIconPixels(AppActive, pixels);
   hIcon := CreateIconFromPixels(pixels);
   if hIcon = 0 then
     Exit;
@@ -271,7 +271,7 @@ begin
   AppendMenu(TrayMenu, MF_SEPARATOR, 0, nil);
   AppendMenu(TrayMenu, MF_STRING, ID_QUIT, 'Quit');
 
-  GenerateIconPixels(AppActive, pixels);
+  GenerateTrayIconPixels(AppActive, pixels);
   TrayIcon := CreateIconFromPixels(pixels);
 
   FillChar(nid, SizeOf(nid), 0);

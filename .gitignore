@@ -6,3 +6,6 @@ assets/stayawake.ico
 
 # macOS folder metadata
 .DS_Store
+
+# Agent workspace (working memory, local paths) — not project source
+.workbuddy/

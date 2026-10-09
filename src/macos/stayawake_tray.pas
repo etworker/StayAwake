@@ -104,7 +104,7 @@ var
   sz: NSSize;
 begin
   Result := nil;
-  GenerateIconPixels(AppActive, pixels);
+  GenerateTrayIconPixels(AppActive, pixels);
   cs := CGColorSpaceCreateDeviceRGB;
   if cs = nil then
     Exit;

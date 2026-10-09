@@ -33,8 +33,8 @@ begin
   if not AcquireSingleInstance then
     Exit;
 
-  // Always start in the Working (active) state; the documented --start-active
-  // flag is accepted but redundant.
+  // Always start in the Working (active) state; there is no CLI flag, the
+  // default is intentionally "active".
   AppActive := True;
   UpdateExecutionState;
 

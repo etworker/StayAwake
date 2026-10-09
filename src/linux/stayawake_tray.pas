@@ -168,7 +168,7 @@ var
   i: Integer;
 begin
   Result := nil;
-  GenerateIconPixels(AppActive, pixels);
+  GenerateTrayIconPixels(AppActive, pixels);
   pb := gdk_pixbuf_new(GDK_COLORSPACE_RGB, TRUE, 8, ICON_SIZE, ICON_SIZE);
   if pb = nil then
     Exit;
@@ -242,6 +242,8 @@ end;
 
 procedure TrayAutostartProc; cdecl;
 begin
+  // Re-entry is prevented in RefreshMenu by blocking this item's 'activate'
+  // handler during programmatic syncs.
   if IsAutoStartEnabled then
     DisableAutoStart
   else
