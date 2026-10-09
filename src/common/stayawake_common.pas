@@ -13,9 +13,6 @@ const
 type
   TIconPixels = array[0 .. (ICON_SIZE * ICON_SIZE * 4) - 1] of Byte;
 
-var
-  AppActive: Boolean;
-
 // Draw the tray/icon artwork into a caller-supplied RGBA buffer of
 // Size x Size. Shared by the runtime trays (Size = ICON_SIZE, macOS uses 36)
 // and tools/gen_icon.pas so the two can never drift apart.
@@ -36,11 +33,118 @@ procedure GenerateTrayIconPixels(Active: Boolean; var Pixels: TIconPixels);
 function ReadConfigValue(FileName, DefValue: string): string;
 procedure WriteConfigValue(FileName, Value: string);
 
+// == Shared tray core =========================================================
+// One declarative menu tree + one set of user-visible strings serve all three
+// platform trays. A platform tray (the "renderer") fills TrayConfigDir and the
+// TrayHooks callbacks, then binds BuildTrayMenu's tree to its native widgets:
+// every click funnels into MenuActionInvoke, every state sync reads
+// MenuActionState, every label comes from L()/the node's Text.
+
+type
+  TTrayLang = (tlEn, tlZh);
+  TStrMap = array[TTrayLang] of string;
+
+  TMenuAction = (
+    maNone,        // submenu titles / nodes without their own action
+    maToggleAwake,
+    maLidBlock,
+    maLidAllow,
+    maAutostart,
+    maLangAuto,
+    maLangEn,
+    maLangZh,
+    maAbout,
+    maQuit
+  );
+
+  TMenuItemKind = (mkItem, mkCheck, mkRadio, mkSubmenu, mkSep);
+
+  PMenuNode = ^TMenuNode;
+  TMenuNode = record
+    Kind: TMenuItemKind;
+    Action: TMenuAction;
+    Text: TStrMap;
+    RadioGroup: Integer;             // mkRadio only; nodes sharing a group are exclusive
+    Sub: array of PMenuNode;         // mkSubmenu only
+  end;
+
+  TTrayHooks = record
+    HasLid: Boolean;                 // False on Windows (no lid feature)
+    RefreshVisual: procedure; cdecl; // icon + tooltip + menu state re-sync
+    ApplyAwake: procedure; cdecl;    // AppActive just changed: update assertions/nudge
+    ApplyLidMode: procedure; cdecl;  // lid-mode file just changed: apply guard
+    ApplyLanguage: procedure; cdecl; // language file just changed: relabel everything
+    ShowAbout: procedure; cdecl;
+    Quit: procedure; cdecl;
+  end;
+
+var
+  AppActive: Boolean;
+  // Platform-provided before the tray starts (paths use the platform's own
+  // config convention; language and lid-mode files share the stayawake/ dir).
+  TrayConfigDir: string;
+  TrayHooks: TTrayHooks;
+  // Platform probe for the system UI language ('zh-Hans-CN', 'en-US', ...);
+  // empty result or unset hook means "assume English". Needed because the
+  // source of this information differs per platform (LANG env var, the
+  // AppleLanguages default, GetUserDefaultUILanguage).
+  TraySystemLang: function: string; cdecl;
+
+// All user-visible strings, per language. Menu labels state the action and
+// its consequence so each item is unambiguous. Single source for all trays.
+const
+  SAwake: TStrMap = ('Keep Awake (block idle sleep)', '保持清醒(阻止闲置睡眠)');
+  SLidTitle: TStrMap = ('Lid Close on AC Power', '合盖行为(接电源时)');
+  SLidBlock: TStrMap = ('Do Nothing (Guard blocks sleep)', '不动作(守卫拦截睡眠)');
+  SLidAllow: TStrMap = ('Suspend (system default)', '睡眠(系统默认)');
+  SAutoStart: TStrMap = ('Run at Login', '开机自启');
+  SLangTitle: TStrMap = ('Language', '语言 / Language');
+  SLangAuto: TStrMap = ('Follow System', '跟随系统');
+  SAbout: TStrMap = ('About StayAwake', '关于 StayAwake');
+  SQuit: TStrMap = ('Quit', '退出');
+  STipWork: TStrMap = ('StayAwake - preventing sleep', 'StayAwake - 防睡中');
+  STipPause: TStrMap = ('StayAwake - paused', 'StayAwake - 已暂停');
+  SLangEn = 'English';
+  SLangZh = '中文';
+
+// Paths of the two per-user settings files (derived from TrayConfigDir).
+function LangFilePath: string;
+function LidFilePath: string;
+
+// Language selection: explicit choice in the lang file wins, otherwise the
+// system UI language (zh-* -> Chinese).
+function CurrentLang: TTrayLang;
+function CurrentLangStored: string;
+function L(M: TStrMap): string;
+procedure ApplyLanguage(ALang: string);
+
+// Lid-close policy persistence ('block' / 'allow'; anything else = default).
+function LidMode: string;
+procedure SetLidMode(AMode: string);
+
+// The one menu definition. Callers own the returned tree (FreeTrayMenu).
+function BuildTrayMenu(HasLid: Boolean): PMenuNode;
+procedure FreeTrayMenu(var Root: PMenuNode);
+
+// Checked/radio state of an action, as the renderer should display it.
+function MenuActionState(A: TMenuAction): Boolean;
+
+// Central click dispatcher: applies the action and triggers the platform
+// hooks. Unknown actions are ignored.
+procedure MenuActionInvoke(A: TMenuAction);
+
+// Localized tray tooltip for the current state.
+function TrayTooltip: string;
+
+// Bilingual About body (the dialog itself stays platform-native).
+function AboutText: string;
+
 implementation
 
 uses
   SysUtils,
-  Classes;
+  Classes,
+  stayawake_autostart;
 
 procedure GenerateIconPixels(Size: Integer; Active: Boolean; Pixels: PByte);
 const
@@ -162,6 +266,212 @@ end;
 procedure GenerateTrayIconPixels(Active: Boolean; var Pixels: TIconPixels);
 begin
   GenerateIconPixels(ICON_SIZE, Active, @Pixels[0]);
+end;
+
+// == Shared tray core =========================================================
+
+const
+  RG_LID = 1;
+  RG_LANG = 2;
+  SEmpty: TStrMap = ('', '');
+
+function LangFilePath: string;
+begin
+  if TrayConfigDir = '' then
+    Exit('');
+  Result := TrayConfigDir + '/stayawake/lang';
+end;
+
+function LidFilePath: string;
+begin
+  if TrayConfigDir = '' then
+    Exit('');
+  Result := TrayConfigDir + '/stayawake/lid-mode';
+end;
+
+function CurrentLangStored: string;
+begin
+  Result := LowerCase(ReadConfigValue(LangFilePath, ''));
+end;
+
+function CurrentLang: TTrayLang;
+var
+  Stored, Sys: string;
+begin
+  Result := tlEn;
+  Stored := CurrentLangStored;
+  if Stored = 'zh' then
+    Exit(tlZh);
+  if Stored = 'en' then
+    Exit(tlEn);
+  // No explicit choice yet: follow the system UI language (zh-* -> Chinese).
+  if Assigned(TraySystemLang) then
+  begin
+    Sys := LowerCase(TraySystemLang());
+    if Pos('zh', Sys) = 1 then
+      Result := tlZh;
+  end;
+end;
+
+function L(M: TStrMap): string;
+begin
+  Result := M[CurrentLang];
+end;
+
+procedure ApplyLanguage(ALang: string);
+begin
+  if (ALang <> '') and (ALang <> 'en') and (ALang <> 'zh') then
+    Exit;
+  WriteConfigValue(LangFilePath, ALang);
+  if Assigned(TrayHooks.ApplyLanguage) then
+    TrayHooks.ApplyLanguage;
+end;
+
+function LidMode: string;
+begin
+  if ReadConfigValue(LidFilePath, 'allow') = 'block' then
+    Result := 'block'
+  else
+    Result := 'allow';
+end;
+
+procedure SetLidMode(AMode: string);
+begin
+  if (AMode <> 'block') and (AMode <> 'allow') then
+    Exit;
+  WriteConfigValue(LidFilePath, AMode);
+  if Assigned(TrayHooks.ApplyLidMode) then
+    TrayHooks.ApplyLidMode;
+end;
+
+procedure AddChild(Parent: PMenuNode; Child: PMenuNode);
+begin
+  SetLength(Parent^.Sub, Length(Parent^.Sub) + 1);
+  Parent^.Sub[High(Parent^.Sub)] := Child;
+end;
+
+function NewNode(AKind: TMenuItemKind; AAction: TMenuAction;
+  const AText: TStrMap; ARadioGroup: Integer): PMenuNode;
+begin
+  New(Result);
+  FillChar(Result^, SizeOf(TMenuNode), 0);
+  Result^.Kind := AKind;
+  Result^.Action := AAction;
+  Result^.Text := AText;
+  Result^.RadioGroup := ARadioGroup;
+end;
+
+procedure FreeNode(var N: PMenuNode);
+var
+  i: Integer;
+begin
+  if N = nil then
+    Exit;
+  for i := 0 to High(N^.Sub) do
+    FreeNode(N^.Sub[i]);
+  SetLength(N^.Sub, 0);
+  Dispose(N);
+  N := nil;
+end;
+
+function BuildTrayMenu(HasLid: Boolean): PMenuNode;
+var
+  lid, lang: PMenuNode;
+  Fixed: TStrMap;
+begin
+  Result := NewNode(mkSubmenu, maNone, SEmpty, 0);   // invisible root
+
+  AddChild(Result, NewNode(mkCheck, maToggleAwake, SAwake, 0));
+
+  if HasLid then
+  begin
+    lid := NewNode(mkSubmenu, maNone, SLidTitle, 0);
+    AddChild(lid, NewNode(mkRadio, maLidBlock, SLidBlock, RG_LID));
+    AddChild(lid, NewNode(mkRadio, maLidAllow, SLidAllow, RG_LID));
+    AddChild(Result, lid);
+  end;
+
+  AddChild(Result, NewNode(mkCheck, maAutostart, SAutoStart, 0));
+
+  lang := NewNode(mkSubmenu, maNone, SLangTitle, 0);
+  AddChild(lang, NewNode(mkRadio, maLangAuto, SLangAuto, RG_LANG));
+  Fixed[tlEn] := SLangEn;  Fixed[tlZh] := SLangEn;
+  AddChild(lang, NewNode(mkRadio, maLangEn, Fixed, RG_LANG));
+  Fixed[tlEn] := SLangZh;  Fixed[tlZh] := SLangZh;
+  AddChild(lang, NewNode(mkRadio, maLangZh, Fixed, RG_LANG));
+  AddChild(Result, lang);
+
+  AddChild(Result, NewNode(mkSep, maNone, SEmpty, 0));
+  AddChild(Result, NewNode(mkItem, maAbout, SAbout, 0));
+  AddChild(Result, NewNode(mkSep, maNone, SEmpty, 0));
+  AddChild(Result, NewNode(mkItem, maQuit, SQuit, 0));
+end;
+
+procedure FreeTrayMenu(var Root: PMenuNode);
+begin
+  FreeNode(Root);
+end;
+
+function MenuActionState(A: TMenuAction): Boolean;
+begin
+  case A of
+    maToggleAwake: Result := AppActive;
+    maAutostart:   Result := IsAutoStartEnabled;
+    maLidBlock:    Result := LidMode = 'block';
+    maLidAllow:    Result := LidMode <> 'block';
+    maLangAuto:    Result := (CurrentLangStored <> 'en') and (CurrentLangStored <> 'zh');
+    maLangEn:      Result := CurrentLangStored = 'en';
+    maLangZh:      Result := CurrentLangStored = 'zh';
+  else
+    Result := False;
+  end;
+end;
+
+procedure MenuActionInvoke(A: TMenuAction);
+begin
+  case A of
+    maToggleAwake:
+    begin
+      AppActive := not AppActive;
+      if Assigned(TrayHooks.ApplyAwake) then
+        TrayHooks.ApplyAwake;
+      if Assigned(TrayHooks.RefreshVisual) then
+        TrayHooks.RefreshVisual;
+    end;
+    maAutostart:
+    begin
+      if IsAutoStartEnabled then
+        DisableAutoStart
+      else
+        EnsureAutoStart;
+      if Assigned(TrayHooks.RefreshVisual) then
+        TrayHooks.RefreshVisual;
+    end;
+    maLidBlock:  SetLidMode('block');
+    maLidAllow:  SetLidMode('allow');
+    maLangAuto:  ApplyLanguage('');
+    maLangEn:    ApplyLanguage('en');
+    maLangZh:    ApplyLanguage('zh');
+    maAbout:     if Assigned(TrayHooks.ShowAbout) then TrayHooks.ShowAbout;
+    maQuit:      if Assigned(TrayHooks.Quit) then TrayHooks.Quit;
+  end;
+end;
+
+function TrayTooltip: string;
+begin
+  if AppActive then
+    Result := L(STipWork)
+  else
+    Result := L(STipPause);
+end;
+
+function AboutText: string;
+begin
+  Result :=
+      APP_NAME + ' ' + APP_VERSION + #10#10 +
+      'Prevents idle sleep by moving the mouse every ' +
+      IntToStr(INTERVAL_SECS) + ' seconds.' + #10#10 +
+      '防止系统因「闲置」而睡眠 / 熄屏 / 锁屏。';
 end;
 
 function ReadConfigValue(FileName, DefValue: string): string;

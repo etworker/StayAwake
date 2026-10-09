@@ -10,15 +10,14 @@ uses
 procedure StartMoverThread;
 procedure UpdateExecutionState;
 
-// Lid-close policy, mirroring the Linux tray semantics: while the mode file
-// says "block", hold a PreventSystemSleep assertion. powerd only honors that
-// assertion type while the machine is on AC power, so on battery the system
-// default applies (lid close sleeps) with no explicit power probing on our
-// side. On Apple Silicon the assertion also covers lid-close sleep; on older
-// systems it simply has no lid effect and nothing breaks.
+// Lid-close policy, mirroring the Linux tray semantics: while the lid-mode
+// file (owned by stayawake_common) says "block", hold a PreventSystemSleep
+// assertion. powerd only honors that assertion type while the machine is on
+// AC power, so on battery the system default applies (lid close sleeps) with
+// no explicit power probing on our side. On Apple Silicon the assertion also
+// covers lid-close sleep; on older systems it simply has no lid effect and
+// nothing breaks.
 procedure LidGuardApply;
-procedure LidGuardSetMode(AMode: string);
-function LidGuardMode: string;
 
 implementation
 
@@ -140,33 +139,6 @@ begin
 end;
 
 // ---- Lid-close policy -------------------------------------------------------
-// Mode file mirrors the Linux layout: 'block' = guard, 'allow' = default.
-
-function LidGuardConfigFile: string;
-var
-  Home: string;
-begin
-  Home := GetEnvironmentVariable('HOME');
-  if Home = '' then
-    Exit('');
-  Result := Home + '/Library/Application Support/stayawake/lid-mode';
-end;
-
-function LidGuardMode: string;
-begin
-  if ReadConfigValue(LidGuardConfigFile, 'allow') = 'block' then
-    Result := 'block'
-  else
-    Result := 'allow';
-end;
-
-procedure LidGuardSetMode(AMode: string);
-begin
-  if (AMode <> 'block') and (AMode <> 'allow') then
-    Exit;
-  WriteConfigValue(LidGuardConfigFile, AMode);
-  LidGuardApply;
-end;
 
 procedure LidGuardApply;
 var
@@ -175,7 +147,7 @@ var
 begin
   if (IOPMAssertionCreateWithName = nil) or (IOPMAssertionRelease = nil) then
     Exit;
-  if (LidGuardMode = 'block') and (not gLidAssertionOn) then
+  if (LidMode = 'block') and (not gLidAssertionOn) then
   begin
     reason := CFStringCreateWithCString(nil,
       PAnsiChar('StayAwake lid guard'), kCFStringEncodingUTF8);
@@ -190,7 +162,7 @@ begin
       CFRelease(atype);
     gLidAssertionOn := res = 0;
   end
-  else if (LidGuardMode <> 'block') and gLidAssertionOn then
+  else if (LidMode <> 'block') and gLidAssertionOn then
   begin
     if gLidAssertionID <> 0 then
       IOPMAssertionRelease(gLidAssertionID);

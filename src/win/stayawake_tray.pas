@@ -17,27 +17,19 @@ uses
   stayawake_mover,
   Windows;
 
-// Menu structure and behavior mirror the Linux tray (src/linux/stayawake_tray.pas):
-// single checkable "Keep Awake" row, localized labels (EN/中文) with an in-menu
-// language switcher, and left click opening the same menu as right click. Keep
-// the SAwake/SLidTitle/... string tables 1:1 across both units. The Linux-only
-// lid-close submenu has no Windows counterpart (logind guard) and is absent.
+// Platform renderer for the shared tray core (stayawake_common): it binds the
+// declarative menu tree to Shell_NotifyIcon + HMENU and implements the
+// platform hooks. All strings, menu structure, state queries and click
+// dispatching live in common and are identical on Linux/macOS.
 // All user-visible text goes through UTF8Decode + the *W APIs so Chinese
 // renders correctly regardless of the process code page.
+// Menu command IDs are Ord(TMenuAction) (>= 1, maNone is never rendered).
 
 function GetUserDefaultUILanguage: LANGID; stdcall; external 'kernel32' name 'GetUserDefaultUILanguage';
 
 const
   WM_TRAYCALLBACK = WM_APP + 1;
   HWND_MESSAGE = HWND($FFFFFFFD);
-  ID_AWAKE = 1001;
-  ID_AUTOSTART = 1002;
-  ID_LANG_TITLE = 1003;
-  ID_LANG_AUTO = 1004;
-  ID_LANG_EN = 1005;
-  ID_LANG_ZH = 1006;
-  ID_ABOUT = 1007;
-  ID_QUIT = 1008;
   NIM_ADD = $00000000;
   NIM_MODIFY = $00000001;
   NIM_DELETE = $00000002;
@@ -46,26 +38,128 @@ const
   NIF_TIP = $00000004;
 
 type
-  TTrayLang = (tlEn, tlZh);
-  TStrMap = array[TTrayLang] of string;
-
-const
-  // All user-visible strings, per language. Menu labels state the action
-  // and its consequence so each item is unambiguous. Keep 1:1 with Linux.
-  SAwake: TStrMap = ('Keep Awake (block idle sleep)', '保持清醒(阻止闲置睡眠)');
-  SAutoStart: TStrMap = ('Run at Login', '开机自启');
-  SLangTitle: TStrMap = ('Language', '语言 / Language');
-  SLangAuto: TStrMap = ('Follow System', '跟随系统');
-  SAbout: TStrMap = ('About StayAwake', '关于 StayAwake');
-  SQuit: TStrMap = ('Quit', '退出');
-  STipWork: TStrMap = ('StayAwake - preventing sleep', 'StayAwake - 防睡中');
-  STipPause: TStrMap = ('StayAwake - paused', 'StayAwake - 已暂停');
+  TItemBinding = record
+    Node: PMenuNode;
+    ParentMenu: HMENU;
+  end;
 
 var
   TrayHwnd: HWND = 0;
   TrayIcon: NativeUInt = 0;
   TrayMenu: HMENU = 0;
-  LangMenu: HMENU = 0;
+  MenuRoot: PMenuNode = nil;
+  Bindings: array of TItemBinding;
+
+function CreateIconFromPixels(const Pixels: TIconPixels): NativeUInt; forward;
+
+procedure TipToBuf(const S: WideString; Dst: PWideChar; MaxLen: Integer);
+var
+  n: Integer;
+begin
+  n := Length(S);
+  if n > MaxLen then
+    n := MaxLen;
+  if n > 0 then
+    Move(S[1], Dst^, n * SizeOf(WideChar));
+  (Dst + n)^ := #0;
+end;
+
+function HookSystemLang: string; cdecl;
+begin
+  // GetUserDefaultUILanguage: primary language id 0x04 = Chinese.
+  if (GetUserDefaultUILanguage and $FF) = $04 then
+    Result := 'zh-Hans'
+  else
+    Result := 'en-US';
+end;
+
+// ---- Platform hooks ---------------------------------------------------------
+
+procedure HookRefreshVisual; cdecl;
+var
+  hIcon: NativeUInt;
+  pixels: TIconPixels;
+  nid: NOTIFYICONDATAW;
+  tip: WideString;
+  i: Integer;
+begin
+  if TrayHwnd = 0 then
+    Exit;
+  GenerateTrayIconPixels(AppActive, pixels);
+  hIcon := CreateIconFromPixels(pixels);
+  if hIcon = 0 then
+    Exit;
+  if TrayIcon <> 0 then
+    DestroyIcon(TrayIcon);
+  TrayIcon := hIcon;
+  tip := UTF8Decode(TrayTooltip);
+  FillChar(nid, SizeOf(nid), 0);
+  nid.cbSize := SizeOf(nid);
+  nid.Wnd := TrayHwnd;
+  nid.uID := 1;
+  nid.uFlags := NIF_ICON or NIF_TIP;
+  nid.hIcon := hIcon;
+  TipToBuf(tip, @nid.szTip[0], High(nid.szTip));
+  Shell_NotifyIconW(NIM_MODIFY, @nid);
+  for i := 0 to High(Bindings) do
+    with Bindings[i] do
+      case Node^.Kind of
+        mkCheck, mkRadio:
+        begin
+          if MenuActionState(Node^.Action) then
+            CheckMenuItem(ParentMenu, Ord(Node^.Action), MF_BYCOMMAND or MF_CHECKED)
+          else
+            CheckMenuItem(ParentMenu, Ord(Node^.Action), MF_BYCOMMAND or MF_UNCHECKED);
+        end;
+      end;
+end;
+
+procedure HookApplyAwake; cdecl;
+begin
+  UpdateExecutionState;
+  // Pausing must wake the mover so it clears its own per-thread ES_* flags.
+  if not AppActive then
+    WakeMoverThread;
+end;
+
+procedure HookApplyLanguage; cdecl;
+var
+  i: Integer;
+  wide: WideString;
+begin
+  for i := 0 to High(Bindings) do
+  begin
+    wide := UTF8Decode(L(Bindings[i].Node^.Text));
+    ModifyMenuW(Bindings[i].ParentMenu, Ord(Bindings[i].Node^.Action),
+      MF_BYCOMMAND or MF_STRING, Ord(Bindings[i].Node^.Action), PWideChar(wide));
+  end;
+  HookRefreshVisual;
+end;
+
+procedure HookShowAbout; cdecl;
+var
+  Msg, Title: WideString;
+begin
+  Msg := UTF8Decode(AboutText);
+  Title := UTF8Decode(L(SAbout));
+  MessageBoxW(0, PWideChar(Msg), PWideChar(Title), MB_OK or MB_ICONINFORMATION);
+end;
+
+procedure HookQuit; cdecl;
+var
+  nid: NOTIFYICONDATAW;
+begin
+  if TrayHwnd <> 0 then begin
+    FillChar(nid, SizeOf(nid), 0);
+    nid.cbSize := SizeOf(nid);
+    nid.Wnd := TrayHwnd;
+    nid.uID := 1;
+    Shell_NotifyIconW(NIM_DELETE, @nid);
+    PostMessage(TrayHwnd, WM_DESTROY, 0, 0);
+  end;
+end;
+
+// ---- Icon artwork -----------------------------------------------------------
 
 function CreateIconFromPixels(const Pixels: TIconPixels): NativeUInt;
 var
@@ -121,288 +215,68 @@ begin
   end;
 end;
 
-// ---- Config (language choice), mirrors the Linux tray ----------------------
+// ---- Menu construction ------------------------------------------------------
 
-function ConfigDir: string;
+procedure FillMenu(Dest: HMENU; Parent: PMenuNode);
 var
-  Buf: array[0..1023] of Char;
+  i: Integer;
+  node: PMenuNode;
+  sub: HMENU;
 begin
-  // %APPDATA% is always set for interactive sessions; '.' keeps config
-  // reads harmless (file simply not found) in odd service contexts.
-  Result := '.';
-  if GetEnvironmentVariable('APPDATA', Buf, SizeOf(Buf)) > 0 then
-    Result := Buf;
-end;
-
-function LangFilePath: string;
-begin
-  Result := ConfigDir + '\stayawake\lang';
-end;
-
-function ReadConfigValue(FileName, DefValue: string): string;
-var
-  sl: TStringList;
-begin
-  Result := DefValue;
-  if (FileName = '') or (not FileExists(FileName)) then
-    Exit;
-  sl := TStringList.Create;
-  try
-    try
-      sl.LoadFromFile(FileName);
-      if sl.Count > 0 then
-        Result := Trim(sl[0]);
-    except
-      on E: Exception do
-        ;
+  for i := 0 to High(Parent^.Sub) do
+  begin
+    node := Parent^.Sub[i];
+    case node^.Kind of
+      mkSep:
+        AppendMenuW(Dest, MF_SEPARATOR, 0, nil);
+      mkSubmenu:
+      begin
+        sub := CreatePopupMenu;
+        FillMenu(sub, node);
+        AppendMenuW(Dest, MF_POPUP, HMENU(sub),
+          PWideChar(UTF8Decode(L(node^.Text))));
+      end;
+    else
+      AppendMenuW(Dest, MF_STRING, Ord(node^.Action),
+        PWideChar(UTF8Decode(L(node^.Text))));
+      // Remember the owning menu so Check/ModifyMenuItem can reach items
+      // inside submenus.
+      SetLength(Bindings, Length(Bindings) + 1);
+      Bindings[High(Bindings)].Node := node;
+      Bindings[High(Bindings)].ParentMenu := Dest;
     end;
-  finally
-    sl.Free;
   end;
 end;
 
-procedure WriteConfigValue(FileName, Value: string);
-var
-  sl: TStringList;
-begin
-  if FileName = '' then
-    Exit;
-  if not ForceDirectories(ExtractFilePath(FileName)) then
-    Exit;
-  sl := TStringList.Create;
-  try
-    sl.Add(Value);
-    try
-      sl.SaveToFile(FileName);
-    except
-      // Config must not crash the tray; the setting stays unchanged.
-      on E: Exception do
-        ;
-    end;
-  finally
-    sl.Free;
-  end;
-end;
-
-function CurrentLang: TTrayLang;
-var
-  Stored: string;
-begin
-  Result := tlEn;
-  Stored := LowerCase(ReadConfigValue(LangFilePath, ''));
-  if Stored = 'zh' then
-    Exit(tlZh);
-  if Stored = 'en' then
-    Exit(tlEn);
-  // No explicit choice yet: follow the user's UI language (zh-* -> Chinese).
-  if (GetUserDefaultUILanguage and $FF) = $04 then
-    Result := tlZh;
-end;
-
-function L(M: TStrMap): string;
-begin
-  Result := M[CurrentLang];
-end;
-
-// ---- Tray visuals -----------------------------------------------------------
-
-procedure TraySetVisual; forward;
-
-// NOTIFYICONDATAW keeps the localized tooltip readable on every code page.
-procedure TipToBuf(const S: WideString; Dst: PWideChar; MaxLen: Integer);
-var
-  n: Integer;
-begin
-  n := Length(S);
-  if n > MaxLen then
-    n := MaxLen;
-  if n > 0 then
-    Move(S[1], Dst^, n * SizeOf(WideChar));
-  (Dst + n)^ := #0;
-end;
-
-procedure TrayTipText(var Tip: WideString);
-begin
-  if AppActive then
-    Tip := UTF8Decode(L(STipWork))
-  else
-    Tip := UTF8Decode(L(STipPause));
-end;
-
-procedure ShowAbout;
-var
-  Msg, Title: WideString;
-begin
-  Msg :=
-      UTF8Decode(
-          APP_NAME
-              + ' '
-              + APP_VERSION
-              + #10#10
-              + 'Prevents idle sleep by moving the mouse every '
-              + IntToStr(INTERVAL_SECS)
-              + ' seconds.'
-              + #10#10
-              + '防止系统因「闲置」而睡眠 / 熄屏 / 锁屏。'
-      );
-  Title := UTF8Decode(L(SAbout));
-  MessageBoxW(0, PWideChar(Msg), PWideChar(Title), MB_OK or MB_ICONINFORMATION);
-end;
-
-procedure RefreshMenu; forward;
-
-// Left click opens the same menu as right click: clicking the icon must
-// never change behavior silently.
 procedure ShowTrayMenu;
 var
   pt: TPoint;
 begin
-  RefreshMenu;
   SetForegroundWindow(TrayHwnd);
   GetCursorPos(pt);
   TrackPopupMenu(TrayMenu, TPM_LEFTALIGN or TPM_BOTTOMALIGN or TPM_RIGHTBUTTON, pt.x, pt.y, 0, TrayHwnd, nil);
   PostMessage(TrayHwnd, WM_NULL, 0, 0);
 end;
 
-procedure TraySetVisual;
-var
-  hIcon: NativeUInt;
-  pixels: TIconPixels;
-  nid: NOTIFYICONDATAW;
-  tip: WideString;
-begin
-  if TrayHwnd = 0 then
-    Exit;
-  GenerateTrayIconPixels(AppActive, pixels);
-  hIcon := CreateIconFromPixels(pixels);
-  if hIcon = 0 then
-    Exit;
-  if TrayIcon <> 0 then
-    DestroyIcon(TrayIcon);
-  TrayIcon := hIcon;
-  TrayTipText(tip);
-  FillChar(nid, SizeOf(nid), 0);
-  nid.cbSize := SizeOf(nid);
-  nid.Wnd := TrayHwnd;
-  nid.uID := 1;
-  nid.uFlags := NIF_ICON or NIF_TIP;
-  nid.hIcon := hIcon;
-  TipToBuf(tip, @nid.szTip[0], High(nid.szTip));
-  Shell_NotifyIconW(NIM_MODIFY, @nid);
-end;
-
-// ---- Language ---------------------------------------------------------------
-
-procedure SetAllLabels;
-begin
-  if TrayMenu = 0 then
-    Exit;
-  ModifyMenuW(TrayMenu, ID_AWAKE, MF_BYCOMMAND or MF_STRING, ID_AWAKE, PWideChar(UTF8Decode(L(SAwake))));
-  ModifyMenuW(TrayMenu, ID_AUTOSTART, MF_BYCOMMAND or MF_STRING, ID_AUTOSTART, PWideChar(UTF8Decode(L(SAutoStart))));
-  ModifyMenuW(LangMenu, ID_LANG_AUTO, MF_BYCOMMAND or MF_STRING, ID_LANG_AUTO, PWideChar(UTF8Decode(L(SLangAuto))));
-  ModifyMenuW(
-      TrayMenu,
-      ID_LANG_TITLE,
-      MF_BYCOMMAND or MF_POPUP,
-      UINT_PTR(LangMenu),
-      PWideChar(UTF8Decode(L(SLangTitle)))
-  );
-  ModifyMenuW(TrayMenu, ID_ABOUT, MF_BYCOMMAND or MF_STRING, ID_ABOUT, PWideChar(UTF8Decode(L(SAbout))));
-  ModifyMenuW(TrayMenu, ID_QUIT, MF_BYCOMMAND or MF_STRING, ID_QUIT, PWideChar(UTF8Decode(L(SQuit))));
-  TraySetVisual;
-end;
-
-procedure ApplyLanguage(ALang: string);
-begin
-  WriteConfigValue(LangFilePath, ALang);
-  SetAllLabels;
-end;
-
-// ---- Menu actions -----------------------------------------------------------
-
-procedure RefreshMenu;
-var
-  Lang: string;
-begin
-  if TrayMenu = 0 then
-    Exit;
-  if AppActive then
-    CheckMenuItem(TrayMenu, ID_AWAKE, MF_BYCOMMAND or MF_CHECKED)
-  else
-    CheckMenuItem(TrayMenu, ID_AWAKE, MF_BYCOMMAND or MF_UNCHECKED);
-  if IsAutoStartEnabled then
-    CheckMenuItem(TrayMenu, ID_AUTOSTART, MF_BYCOMMAND or MF_CHECKED)
-  else
-    CheckMenuItem(TrayMenu, ID_AUTOSTART, MF_BYCOMMAND or MF_UNCHECKED);
-  Lang := LowerCase(ReadConfigValue(LangFilePath, ''));
-  if (Lang <> 'en') and (Lang <> 'zh') then
-    CheckMenuItem(TrayMenu, ID_LANG_AUTO, MF_BYCOMMAND or MF_CHECKED)
-  else
-    CheckMenuItem(TrayMenu, ID_LANG_AUTO, MF_BYCOMMAND or MF_UNCHECKED);
-  if Lang = 'en' then
-    CheckMenuItem(TrayMenu, ID_LANG_EN, MF_BYCOMMAND or MF_CHECKED)
-  else
-    CheckMenuItem(TrayMenu, ID_LANG_EN, MF_BYCOMMAND or MF_UNCHECKED);
-  if Lang = 'zh' then
-    CheckMenuItem(TrayMenu, ID_LANG_ZH, MF_BYCOMMAND or MF_CHECKED)
-  else
-    CheckMenuItem(TrayMenu, ID_LANG_ZH, MF_BYCOMMAND or MF_UNCHECKED);
-end;
-
-procedure TrayQuit; forward;
-
 function TrayWndProc(hwnd: HWND; msg: UINT; wParam: WPARAM; lParam: LPARAM): LRESULT; stdcall;
 begin
   Result := 0;
   case msg of
     WM_TRAYCALLBACK:
+      // Left click opens the same menu as right click: clicking the icon must
+      // never change behavior silently.
       case lParam of
         WM_LBUTTONUP, WM_RBUTTONUP, WM_CONTEXTMENU: ShowTrayMenu;
       end;
     WM_COMMAND:
-      case wParam of
-        ID_AWAKE: begin
-          // Checked = prevent idle sleep; unchecked = normal system policy.
-          AppActive := not AppActive;
-          UpdateExecutionState;
-          // Pausing must wake the mover so it clears its own per-thread ES_* flags.
-          if not AppActive then
-            WakeMoverThread;
-          TraySetVisual;
-        end;
-        ID_AUTOSTART: begin
-          if IsAutoStartEnabled then
-            DisableAutoStart
-          else
-            EnsureAutoStart;
-          // Sync the checkbox immediately instead of waiting for the next popup.
-          RefreshMenu;
-        end;
-        ID_LANG_AUTO: ApplyLanguage('');
-        ID_LANG_EN: ApplyLanguage('en');
-        ID_LANG_ZH: ApplyLanguage('zh');
-        ID_ABOUT: ShowAbout;
-        ID_QUIT: TrayQuit;
-      end;
+      MenuActionInvoke(TMenuAction(wParam and $FFFF));
     WM_DESTROY: PostQuitMessage(0);
   else
     Result := DefWindowProc(hwnd, msg, wParam, lParam);
   end;
 end;
 
-procedure TrayQuit;
-var
-  nid: NOTIFYICONDATAW;
-begin
-  if TrayHwnd <> 0 then begin
-    FillChar(nid, SizeOf(nid), 0);
-    nid.cbSize := SizeOf(nid);
-    nid.Wnd := TrayHwnd;
-    nid.uID := 1;
-    Shell_NotifyIconW(NIM_DELETE, @nid);
-    PostMessage(TrayHwnd, WM_DESTROY, 0, 0);
-  end;
-end;
+// ---- Entry point ------------------------------------------------------------
 
 procedure TrayCreate;
 var
@@ -411,7 +285,24 @@ var
   pixels: TIconPixels;
   msg: TMsg;
   tip: WideString;
+  Buf: array[0..1023] of Char;
 begin
+  // %APPDATA% is always set for interactive sessions; '.' keeps config
+  // reads harmless (file simply not found) in odd service contexts.
+  if GetEnvironmentVariable('APPDATA', Buf, SizeOf(Buf)) > 0 then
+    TrayConfigDir := Buf
+  else
+    TrayConfigDir := '.';
+
+  TrayHooks.HasLid := False;
+  TrayHooks.RefreshVisual := @HookRefreshVisual;
+  TrayHooks.ApplyAwake := @HookApplyAwake;
+  TrayHooks.ApplyLidMode := nil;
+  TrayHooks.ApplyLanguage := @HookApplyLanguage;
+  TrayHooks.ShowAbout := @HookShowAbout;
+  TrayHooks.Quit := @HookQuit;
+  TraySystemLang := @HookSystemLang;
+
   FillChar(wc, SizeOf(wc), 0);
   wc.lpfnWndProc := @TrayWndProc;
   wc.hInstance := GetModuleHandle(nil);
@@ -435,25 +326,14 @@ begin
       );
   ShowWindow(TrayHwnd, SW_HIDE);
 
-  LangMenu := CreatePopupMenu;
+  MenuRoot := BuildTrayMenu(TrayHooks.HasLid);
   TrayMenu := CreatePopupMenu;
-  AppendMenuW(TrayMenu, MF_STRING, ID_AWAKE, PWideChar(UTF8Decode(L(SAwake))));
-  AppendMenuW(TrayMenu, MF_SEPARATOR, 0, nil);
-  AppendMenuW(TrayMenu, MF_STRING, ID_AUTOSTART, PWideChar(UTF8Decode(L(SAutoStart))));
-  AppendMenuW(TrayMenu, MF_SEPARATOR, 0, nil);
-  AppendMenuW(LangMenu, MF_STRING, ID_LANG_AUTO, PWideChar(UTF8Decode(L(SLangAuto))));
-  AppendMenuW(LangMenu, MF_STRING, ID_LANG_EN, PWideChar(UTF8Decode('English')));
-  AppendMenuW(LangMenu, MF_STRING, ID_LANG_ZH, PWideChar(UTF8Decode('中文')));
-  AppendMenuW(TrayMenu, MF_POPUP, HMENU(LangMenu), PWideChar(UTF8Decode(L(SLangTitle))));
-  AppendMenuW(TrayMenu, MF_SEPARATOR, 0, nil);
-  AppendMenuW(TrayMenu, MF_STRING, ID_ABOUT, PWideChar(UTF8Decode(L(SAbout))));
-  AppendMenuW(TrayMenu, MF_SEPARATOR, 0, nil);
-  AppendMenuW(TrayMenu, MF_STRING, ID_QUIT, PWideChar(UTF8Decode(L(SQuit))));
+  FillMenu(TrayMenu, MenuRoot);
 
   GenerateTrayIconPixels(AppActive, pixels);
   TrayIcon := CreateIconFromPixels(pixels);
 
-  TrayTipText(tip);
+  tip := UTF8Decode(TrayTooltip);
   FillChar(nid, SizeOf(nid), 0);
   nid.cbSize := SizeOf(nid);
   nid.Wnd := TrayHwnd;
@@ -464,8 +344,7 @@ begin
   TipToBuf(tip, @nid.szTip[0], High(nid.szTip));
   Shell_NotifyIconW(NIM_ADD, @nid);
 
-  TraySetVisual;
-  RefreshMenu;
+  HookRefreshVisual;
 
   while GetMessage(msg, 0, 0, 0) do begin
     TranslateMessage(msg);

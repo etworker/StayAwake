@@ -13,84 +13,104 @@ uses
   SysUtils,
   Classes,
   stayawake_common,
-  stayawake_autostart,
   stayawake_mover,
   CocoaAll,
   MacOSAll;
 
-// Menu structure and behavior mirror the Linux tray (src/linux/stayawake_tray.pas):
-// single checkable "Keep Awake" row, localized labels (EN/中文) with an in-menu
-// language switcher, and any click on the status item opening the same menu.
-// The Linux-only lid-close submenu has no macOS counterpart (logind guard) and
-// is absent, exactly as on Windows. Keep the SAwake/SAutoStart/... string
-// tables 1:1 across all three tray units.
+// Platform renderer for the shared tray core (stayawake_common): it binds the
+// declarative menu tree to NSStatusItem/NSMenu and implements the platform
+// hooks (assertions, quit, about). All strings, menu structure, state queries
+// and click dispatching live in common and are identical on Linux/Windows.
 
 type
   TStayAwakeApp = objcclass(NSObject)
   public
-    procedure toggleAwake(sender: id); message 'toggleAwake:';
-    procedure lidGuard(sender: id); message 'lidGuard:';
-    procedure lidSuspend(sender: id); message 'lidSuspend:';
-    procedure toggleAutostart(sender: id); message 'toggleAutostart:';
-    procedure langAuto(sender: id); message 'langAuto:';
-    procedure langEn(sender: id); message 'langEn:';
-    procedure langZh(sender: id); message 'langZh:';
-    procedure showAbout(sender: id); message 'showAbout:';
-    procedure quitApp(sender: id); message 'quitApp:';
+    procedure trayAction(sender: id); message 'trayAction:';
   end;
 
-type
-  TTrayLang = (tlEn, tlZh);
-  TStrMap = array[TTrayLang] of string;
-
-const
-  // All user-visible strings, per language. Menu labels state the action
-  // and its consequence so each item is unambiguous. Keep 1:1 with Linux/Win.
-  SAwake: TStrMap = ('Keep Awake (block idle sleep)', '保持清醒(阻止闲置睡眠)');
-  SLidTitle: TStrMap = ('Lid Close on AC Power', '合盖行为(接电源时)');
-  SLidBlock: TStrMap = ('Do Nothing (Guard blocks sleep)', '不动作(守卫拦截睡眠)');
-  SLidAllow: TStrMap = ('Suspend (system default)', '睡眠(系统默认)');
-  SAutoStart: TStrMap = ('Run at Login', '开机自启');
-  SLangTitle: TStrMap = ('Language', '语言 / Language');
-  SLangAuto: TStrMap = ('Follow System', '跟随系统');
-  SAbout: TStrMap = ('About StayAwake', '关于 StayAwake');
-  SQuit: TStrMap = ('Quit', '退出');
-  STipWork: TStrMap = ('StayAwake - preventing sleep', 'StayAwake - 防睡中');
-  STipPause: TStrMap = ('StayAwake - paused', 'StayAwake - 已暂停');
+  TItemBinding = record
+    Node: PMenuNode;
+    Item: NSMenuItem;
+  end;
 
 var
   StatusItem: NSStatusItem = nil;
-  MenuAwake: NSMenuItem = nil;
-  MenuLid: NSMenuItem = nil;
-  LidGuardItem: NSMenuItem = nil;
-  LidSuspendItem: NSMenuItem = nil;
-  MenuAutostart: NSMenuItem = nil;
-  MenuLang: NSMenuItem = nil;
-  LangAutoItem: NSMenuItem = nil;
-  LangEnItem: NSMenuItem = nil;
-  LangZhItem: NSMenuItem = nil;
-  AboutItem: NSMenuItem = nil;
-  QuitItem: NSMenuItem = nil;
   AppDelegate: TStayAwakeApp = nil;
+  MenuRoot: PMenuNode = nil;
+  Bindings: array of TItemBinding;
 
-// ---- Config paths (read/write helpers come from stayawake_common) ----------
+function MakeTrayNSImage: NSImage; forward;
 
-function ConfigDir: string;
+// ---- Platform hooks ---------------------------------------------------------
+
+procedure HookRefreshVisual; cdecl;
 var
-  Home: string;
+  img: NSImage;
+  i: Integer;
 begin
-  Home := GetEnvironmentVariable('HOME');
-  if Home = '' then
-    Exit('');
-  Result := Home + '/Library/Application Support';
+  if StatusItem = nil then
+    Exit;
+  img := MakeTrayNSImage;
+  if img <> nil then
+  begin
+    StatusItem.setImage(img);
+    img.release;
+  end;
+  StatusItem.setToolTip(NSString.stringWithUTF8String(PChar(TrayTooltip)));
+  for i := 0 to High(Bindings) do
+    with Bindings[i] do
+      case Node^.Kind of
+        mkCheck, mkRadio:
+        begin
+          if MenuActionState(Node^.Action) then
+            Item.setState(NSOnState)
+          else
+            Item.setState(NSOffState);
+        end;
+      end;
 end;
 
-function LangFilePath: string;
+procedure HookApplyAwake; cdecl;
 begin
-  Result := ConfigDir + '/stayawake/lang';
+  UpdateExecutionState;
 end;
 
-function SystemLangCode: string;
+procedure HookApplyLidMode; cdecl;
+begin
+  LidGuardApply;
+end;
+
+procedure HookApplyLanguage; cdecl;
+var
+  i: Integer;
+begin
+  for i := 0 to High(Bindings) do
+    Bindings[i].Item.setTitle(
+      NSString.stringWithUTF8String(PChar(L(Bindings[i].Node^.Text))));
+  HookRefreshVisual;
+end;
+
+procedure HookShowAbout; cdecl;
+var
+  alert: NSAlert;
+  info: string;
+begin
+  alert := NSAlert.alloc.init;
+  alert.setMessageText(NSString.stringWithUTF8String(PChar(L(SAbout))));
+  info := AboutText + #10#10 +
+      '合盖行为(接电源时)可在托盘菜单切换(Apple Silicon)。';
+  alert.setInformativeText(NSString.stringWithUTF8String(PChar(info)));
+  alert.addButtonWithTitle(NSString.stringWithUTF8String('OK'));
+  alert.runModal;
+  alert.release;
+end;
+
+procedure HookQuit; cdecl;
+begin
+  NSApplication(NSApp).terminate(nil);
+end;
+
+function HookSystemLang: string; cdecl;
 var
   langs: NSArray;
   s: NSString;
@@ -112,36 +132,69 @@ begin
   end;
 end;
 
-function CurrentLangStored: string;
+// ---- Menu construction ------------------------------------------------------
+
+procedure TStayAwakeApp.trayAction(sender: id);
 begin
-  Result := LowerCase(ReadConfigValue(LangFilePath, ''));
+  MenuActionInvoke(TMenuAction(NSMenuItem(sender).tag));
 end;
 
-function CurrentLang: TTrayLang;
+function NewMenuItemFor(Node: PMenuNode): NSMenuItem;
+begin
+  Result := NSMenuItem.alloc.initWithTitle_action_keyEquivalent(
+    NSString.stringWithUTF8String(PChar(L(Node^.Text))),
+    objcselector('trayAction:'), NSString.stringWithUTF8String(''));
+  Result.setTarget(AppDelegate);
+  Result.setTag(NSInteger(Node^.Action));
+end;
+
+procedure Bind(Node: PMenuNode; Item: NSMenuItem);
 var
-  Stored: string;
+  n: Integer;
 begin
-  Result := tlEn;
-  Stored := CurrentLangStored;
-  if Stored = 'zh' then
-    Exit(tlZh);
-  if Stored = 'en' then
-    Exit(tlEn);
-  // No explicit choice yet: follow the system UI language (zh-* -> Chinese).
-  if Pos('zh', SystemLangCode) = 1 then
-    Result := tlZh;
+  n := Length(Bindings);
+  SetLength(Bindings, n + 1);
+  Bindings[n].Node := Node;
+  Bindings[n].Item := Item;
 end;
 
-function L(M: TStrMap): string;
+procedure FillMenu(Dest: NSMenu; Parent: PMenuNode);
+var
+  i: Integer;
+  node: PMenuNode;
+  item, sub: NSMenuItem;
+  subMenu: NSMenu;
 begin
-  Result := M[CurrentLang];
+  Dest.setAutoenablesItems(False);
+  for i := 0 to High(Parent^.Sub) do
+  begin
+    node := Parent^.Sub[i];
+    case node^.Kind of
+      mkSep:
+        Dest.addItem(NSMenuItem.separatorItem);
+      mkSubmenu:
+      begin
+        subMenu := NSMenu.alloc.initWithTitle(
+          NSString.stringWithUTF8String(PChar(L(node^.Text))));
+        subMenu.setAutoenablesItems(False);
+        FillMenu(subMenu, node);
+        sub := NewMenuItemFor(node);
+        sub.setSubmenu(subMenu);
+        subMenu.release;
+        Dest.addItem(sub);
+        Bind(node, sub);
+      end;
+    else
+      item := NewMenuItemFor(node);
+      Dest.addItem(item);
+      Bind(node, item);
+    end;
+  end;
 end;
 
-// ---- Tray visuals -----------------------------------------------------------
+// ---- Tray icon artwork ------------------------------------------------------
 
-procedure TraySetVisual; forward;
-
-function MakeStatusImage: NSImage;
+function MakeTrayNSImage: NSImage;
 const
   // 36 px @ 18 pt = 2x; menu-bar status items draw at ~18 pt, so this stays
   // crisp on Retina instead of being scaled up from a 32 px bitmap.
@@ -189,162 +242,30 @@ begin
     CGImageRelease(cg);
 end;
 
-procedure SetCheckState(item: NSMenuItem; checked: Boolean);
-begin
-  if item = nil then
-    Exit;
-  if checked then
-    item.setState(NSOnState)
-  else
-    item.setState(NSOffState);
-end;
-
-procedure TraySetVisual;
-var
-  img: NSImage;
-  Stored: string;
-begin
-  if StatusItem = nil then
-    Exit;
-  img := MakeStatusImage;
-  if img <> nil then
-  begin
-    StatusItem.setImage(img);
-    img.release;
-  end;
-  if AppActive then
-    StatusItem.setToolTip(NSString.stringWithUTF8String(PChar(L(STipWork))))
-  else
-    StatusItem.setToolTip(NSString.stringWithUTF8String(PChar(L(STipPause))));
-  // Checkable Keep Awake row and the autostart switch reflect live state;
-  // setState does not fire actions, so no handler blocking is needed.
-  SetCheckState(MenuAwake, AppActive);
-  SetCheckState(MenuAutostart, IsAutoStartEnabled);
-  // Lid-close radio group (block vs system default).
-  SetCheckState(LidGuardItem, LidGuardMode = 'block');
-  SetCheckState(LidSuspendItem, LidGuardMode <> 'block');
-  // Language radio group (managed manually; auto-enables is off).
-  Stored := CurrentLangStored;
-  SetCheckState(LangAutoItem, (Stored <> 'en') and (Stored <> 'zh'));
-  SetCheckState(LangEnItem, Stored = 'en');
-  SetCheckState(LangZhItem, Stored = 'zh');
-end;
-
-// ---- Language ---------------------------------------------------------------
-
-procedure UpdateAllTitles;
-begin
-  if StatusItem = nil then
-    Exit;
-  MenuAwake.setTitle(NSString.stringWithUTF8String(PChar(L(SAwake))));
-  MenuLid.setTitle(NSString.stringWithUTF8String(PChar(L(SLidTitle))));
-  LidGuardItem.setTitle(NSString.stringWithUTF8String(PChar(L(SLidBlock))));
-  LidSuspendItem.setTitle(NSString.stringWithUTF8String(PChar(L(SLidAllow))));
-  MenuAutostart.setTitle(NSString.stringWithUTF8String(PChar(L(SAutoStart))));
-  MenuLang.setTitle(NSString.stringWithUTF8String(PChar(L(SLangTitle))));
-  LangAutoItem.setTitle(NSString.stringWithUTF8String(PChar(L(SLangAuto))));
-  AboutItem.setTitle(NSString.stringWithUTF8String(PChar(L(SAbout))));
-  QuitItem.setTitle(NSString.stringWithUTF8String(PChar(L(SQuit))));
-  TraySetVisual;
-end;
-
-procedure ApplyLanguage(ALang: string);
-begin
-  WriteConfigValue(LangFilePath, ALang);
-  UpdateAllTitles;
-end;
-
-// ---- Actions ----------------------------------------------------------------
-
-procedure TStayAwakeApp.toggleAwake(sender: id);
-begin
-  // Checked = prevent idle sleep; unchecked = normal system sleep policy.
-  AppActive := not AppActive;
-  UpdateExecutionState;
-  TraySetVisual;
-end;
-
-procedure TStayAwakeApp.lidGuard(sender: id);
-begin
-  // Checked = lid close on AC does nothing (guard holds a sleep assertion).
-  LidGuardSetMode('block');
-  TraySetVisual;
-end;
-
-procedure TStayAwakeApp.lidSuspend(sender: id);
-begin
-  // System default: closing the lid sleeps as configured by macOS.
-  LidGuardSetMode('allow');
-  TraySetVisual;
-end;
-
-procedure TStayAwakeApp.toggleAutostart(sender: id);
-begin
-  if IsAutoStartEnabled then
-    DisableAutoStart
-  else
-    EnsureAutoStart;
-  // Sync the checkbox immediately instead of waiting for the next sync.
-  TraySetVisual;
-end;
-
-procedure TStayAwakeApp.langAuto(sender: id);
-begin
-  ApplyLanguage('');
-end;
-
-procedure TStayAwakeApp.langEn(sender: id);
-begin
-  ApplyLanguage('en');
-end;
-
-procedure TStayAwakeApp.langZh(sender: id);
-begin
-  ApplyLanguage('zh');
-end;
-
-procedure TStayAwakeApp.showAbout(sender: id);
-var
-  alert: NSAlert;
-  info: string;
-begin
-  alert := NSAlert.alloc.init;
-  alert.setMessageText(NSString.stringWithUTF8String(PChar(L(SAbout))));
-  info :=
-      APP_NAME + ' ' + APP_VERSION + #10#10 +
-      'Prevents idle sleep by moving the mouse every ' +
-      IntToStr(INTERVAL_SECS) + ' seconds.' + #10#10 +
-      '防止系统因「闲置」而睡眠 / 熄屏 / 锁屏。' + #10 +
-      '合盖行为(接电源时)可在托盘菜单切换(Apple Silicon)。';
-  alert.setInformativeText(NSString.stringWithUTF8String(PChar(info)));
-  alert.addButtonWithTitle(NSString.stringWithUTF8String('OK'));
-  alert.runModal;
-  alert.release;
-end;
-
-procedure TStayAwakeApp.quitApp(sender: id);
-begin
-  NSApplication(NSApp).terminate(nil);
-end;
-
-// ---- Construction -----------------------------------------------------------
-
-function NewMenuItem(const title: string; sel: SEL): NSMenuItem;
-begin
-  Result := NSMenuItem.alloc.initWithTitle_action_keyEquivalent(
-    NSString.stringWithUTF8String(PChar(title)), sel, NSString.stringWithUTF8String(''));
-  Result.setTarget(AppDelegate);
-end;
+// ---- Entry point ------------------------------------------------------------
 
 procedure TrayCreate;
 var
   app: NSApplication;
-  menu, langSub, lidSub: NSMenu;
+  menu: NSMenu;
   img: NSImage;
 begin
   app := NSApplication.sharedApplication;
   app.setActivationPolicy(NSApplicationActivationPolicyAccessory);
   app.finishLaunching;
+
+  TrayConfigDir := GetEnvironmentVariable('HOME');
+  if TrayConfigDir <> '' then
+    TrayConfigDir := TrayConfigDir + '/Library/Application Support';
+
+  TrayHooks.HasLid := True;
+  TrayHooks.RefreshVisual := @HookRefreshVisual;
+  TrayHooks.ApplyAwake := @HookApplyAwake;
+  TrayHooks.ApplyLidMode := @HookApplyLidMode;
+  TrayHooks.ApplyLanguage := @HookApplyLanguage;
+  TrayHooks.ShowAbout := @HookShowAbout;
+  TrayHooks.Quit := @HookQuit;
+  TraySystemLang := @HookSystemLang;
 
   AppDelegate := TStayAwakeApp.alloc.init;
 
@@ -352,78 +273,25 @@ begin
   StatusItem.retain;
   StatusItem.setHighlightMode(True);
 
-  img := MakeStatusImage;
+  img := MakeTrayNSImage;
   if img <> nil then
   begin
     StatusItem.setImage(img);
     img.release;
   end;
 
+  MenuRoot := BuildTrayMenu(TrayHooks.HasLid);
   menu := NSMenu.alloc.initWithTitle(NSString.stringWithUTF8String('StayAwake'));
-  menu.setAutoenablesItems(False);
-
-  // Keep Awake: a single checkable row. Checked = prevent idle sleep;
-  // unchecked = let the system sleep normally.
-  MenuAwake := NewMenuItem(L(SAwake), objcselector('toggleAwake:'));
-
-  // Lid-close policy on AC power (Apple Silicon honors PreventSystemSleep).
-  lidSub := NSMenu.alloc.initWithTitle(NSString.stringWithUTF8String('Lid'));
-  lidSub.setAutoenablesItems(False);
-  LidGuardItem := NewMenuItem(L(SLidBlock), objcselector('lidGuard:'));
-  LidSuspendItem := NewMenuItem(L(SLidAllow), objcselector('lidSuspend:'));
-  lidSub.addItem(LidGuardItem);
-  lidSub.addItem(LidSuspendItem);
-  MenuLid := NewMenuItem(L(SLidTitle), nil);
-  MenuLid.setSubmenu(lidSub);
-  lidSub.release;
-
-  MenuAutostart := NewMenuItem(L(SAutoStart), objcselector('toggleAutostart:'));
-
-  // Language switcher (persisted, applies immediately).
-  langSub := NSMenu.alloc.initWithTitle(NSString.stringWithUTF8String('Language'));
-  langSub.setAutoenablesItems(False);
-  LangAutoItem := NewMenuItem(L(SLangAuto), objcselector('langAuto:'));
-  LangEnItem := NewMenuItem('English', objcselector('langEn:'));
-  LangZhItem := NewMenuItem('中文', objcselector('langZh:'));
-  langSub.addItem(LangAutoItem);
-  langSub.addItem(LangEnItem);
-  langSub.addItem(LangZhItem);
-  MenuLang := NewMenuItem(L(SLangTitle), nil);
-  MenuLang.setSubmenu(langSub);
-  langSub.release;
-
-  AboutItem := NewMenuItem(L(SAbout), objcselector('showAbout:'));
-  QuitItem := NewMenuItem(L(SQuit), objcselector('quitApp:'));
-
-  menu.addItem(MenuAwake);
-  menu.addItem(NSMenuItem.separatorItem);
-  menu.addItem(MenuLid);
-  menu.addItem(MenuAutostart);
-  menu.addItem(NSMenuItem.separatorItem);
-  menu.addItem(MenuLang);
-  menu.addItem(NSMenuItem.separatorItem);
-  menu.addItem(AboutItem);
-  menu.addItem(NSMenuItem.separatorItem);
-  menu.addItem(QuitItem);
+  FillMenu(menu, MenuRoot);
 
   StatusItem.setMenu(menu);
-  // The menu (owned by the status item) holds the item references; only the
-  // outer allocations need balancing here.
   menu.release;
-  MenuAwake.release;
-  MenuLid.release;
-  LidGuardItem.release;
-  LidSuspendItem.release;
-  MenuAutostart.release;
-  MenuLang.release;
-  LangAutoItem.release;
-  LangEnItem.release;
-  LangZhItem.release;
-  AboutItem.release;
-  QuitItem.release;
 
-  TraySetVisual;
+  HookRefreshVisual;
   app.run;
 end;
+
+finalization
+  FreeTrayMenu(MenuRoot);
 
 end.

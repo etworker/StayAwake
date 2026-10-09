@@ -13,7 +13,6 @@ uses
   SysUtils,
   Classes,
   stayawake_common,
-  stayawake_autostart,
   ctypes,
   gtk2,
   glib2,
@@ -21,137 +20,24 @@ uses
   gdk2pixbuf,
   gtk2ext;
 
-type
-  TTrayLang = (tlEn, tlZh);
-  TStrMap = array[TTrayLang] of string;
+// Platform renderer for the shared tray core (stayawake_common): it binds the
+// declarative menu tree to GtkStatusIcon/GTK2 and implements the platform
+// hooks (lid guard service, quit, about). All strings, menu structure, state
+// queries and click dispatching live in common and are identical on
+// Windows/macOS.
 
-const
-  // All user-visible strings, per language. Menu labels state the action
-  // and its consequence so each item is unambiguous.
-  SAwake: TStrMap = ('Keep Awake (block idle sleep)', '保持清醒(阻止闲置睡眠)');
-  SLidTitle: TStrMap = ('Lid Close on AC Power', '合盖行为(接电源时)');
-  SLidBlock: TStrMap = ('Do Nothing (Guard blocks sleep)', '不动作(守卫拦截睡眠)');
-  SLidAllow: TStrMap = ('Suspend (system default)', '睡眠(系统默认)');
-  SAutoStart: TStrMap = ('Run at Login', '开机自启');
-  SLangTitle: TStrMap = ('Language', '语言 / Language');
-  SLangAuto: TStrMap = ('Follow System', '跟随系统');
-  SAbout: TStrMap = ('About StayAwake', '关于 StayAwake');
-  SQuit: TStrMap = ('Quit', '退出');
-  STipWork: TStrMap = ('StayAwake - preventing sleep', 'StayAwake - 防睡中');
-  STipPause: TStrMap = ('StayAwake - paused', 'StayAwake - 已暂停');
+type
+  TItemBinding = record
+    Node: PMenuNode;
+    Widget: PGtkWidget;
+    Handler: guint;      // 'toggled'/'activate' handler, blocked during syncs
+  end;
 
 var
   StatusIcon: PGtkStatusIcon = nil;
   TrayMenu: PGtkWidget = nil;
-  TrayAwakeItem: PGtkWidget = nil;
-  TrayAutostartItem: PGtkWidget = nil;
-  LidMenuItem: PGtkWidget = nil;
-  LidGuardItem: PGtkWidget = nil;
-  LidSuspendItem: PGtkWidget = nil;
-  LangMenuItem: PGtkWidget = nil;
-  LangAutoItem: PGtkWidget = nil;
-  LangEnItem: PGtkWidget = nil;
-  LangZhItem: PGtkWidget = nil;
-  AboutItem: PGtkWidget = nil;
-  QuitItem: PGtkWidget = nil;
-  AwakeHandler: guint = 0;
-  AutostartHandler: guint = 0;
-  LidGuardHandler: guint = 0;
-  LidSuspendHandler: guint = 0;
-  LangAutoHandler: guint = 0;
-  LangEnHandler: guint = 0;
-  LangZhHandler: guint = 0;
-
-function ConfigDir: string;
-var
-  Env, Home: string;
-begin
-  Result := GetEnvironmentVariable('XDG_CONFIG_HOME');
-  if Result <> '' then
-    Exit;
-  Home := GetEnvironmentVariable('HOME');
-  if Home = '' then
-    Exit('');
-  Result := Home + '/.config';
-end;
-
-function LidModeFile: string;
-begin
-  Result := ConfigDir + '/stayawake/lid-mode';
-end;
-
-function LangFilePath: string;
-begin
-  Result := ConfigDir + '/stayawake/lang';
-end;
-
-function ReadConfigValue(FileName, DefValue: string): string;
-var
-  sl: TStringList;
-begin
-  Result := DefValue;
-  if (FileName = '') or (not FileExists(FileName)) then
-    Exit;
-  sl := TStringList.Create;
-  try
-    try
-      sl.LoadFromFile(FileName);
-      if sl.Count > 0 then
-        Result := Trim(sl[0]);
-    except
-      on E: Exception do
-        ;
-    end;
-  finally
-    sl.Free;
-  end;
-end;
-
-procedure WriteConfigValue(FileName, Value: string);
-var
-  sl: TStringList;
-begin
-  if FileName = '' then
-    Exit;
-  if not ForceDirectories(ExtractFilePath(FileName)) then
-    Exit;
-  sl := TStringList.Create;
-  try
-    sl.Add(Value);
-    try
-      sl.SaveToFile(FileName);
-    except
-      // Config must not crash the tray; the setting stays unchanged.
-      on E: Exception do
-        ;
-    end;
-  finally
-    sl.Free;
-  end;
-end;
-
-function CurrentLang: TTrayLang;
-var
-  Stored, Locale: string;
-begin
-  Result := tlEn;
-  Stored := LowerCase(ReadConfigValue(LangFilePath, ''));
-  if Stored = 'zh' then
-    Exit(tlZh);
-  if Stored = 'en' then
-    Exit(tlEn);
-  // No explicit choice yet: follow the session locale.
-  Locale := LowerCase(GetEnvironmentVariable('LANG'));
-  if Pos('zh', Locale) = 1 then
-    Result := tlZh;
-end;
-
-function L(M: TStrMap): string;
-begin
-  Result := M[CurrentLang];
-end;
-
-procedure RefreshMenu; forward;
+  MenuRoot: PMenuNode = nil;
+  Bindings: array of TItemBinding;
 
 function MakePixbuf: PGdkPixbuf;
 var
@@ -186,10 +72,174 @@ begin
     gtk_label_set_text(GTK_LABEL(child), PChar(text));
 end;
 
+// ---- Platform hooks ---------------------------------------------------------
+
+function HookSystemLang: string; cdecl;
+begin
+  Result := GetEnvironmentVariable('LANG');
+end;
+
+procedure HookApplyAwake; cdecl;
+begin
+  // Linux keeps the machine awake solely via the periodic mouse nudge while
+  // AppActive; nothing to assert or release here.
+end;
+
+procedure HookApplyLidMode; cdecl;
+begin
+  // Best effort: the guard is installed by src/linux/lid-guard/install.sh.
+  // If the unit is missing this silently fails and the mode file has no
+  // effect until install.sh is run.
+  if LidMode = 'block' then
+    g_spawn_command_line_async('systemctl --user enable --now ac-lid-guard.service', nil);
+end;
+
+procedure HookShowAbout; cdecl;
+var
+  dlg: PGtkWidget;
+begin
+  dlg :=
+      gtk_message_dialog_new(
+          nil,
+          0,
+          GTK_MESSAGE_INFO,
+          GTK_BUTTONS_OK,
+          PChar(
+              AboutText
+                  + #10
+                  + 'Linux:合盖行为可按电源状态在托盘菜单中切换。'
+          )
+      );
+  gtk_dialog_run(GTK_DIALOG(dlg));
+  gtk_widget_destroy(dlg);
+end;
+
+procedure HookQuit; cdecl;
+begin
+  gtk_main_quit;
+end;
+
+// ---- Menu construction and sync ---------------------------------------------
+
+procedure MenuSignalProc(item: PGtkWidget; user_data: gpointer); cdecl;
+var
+  data: PGInt;
+begin
+  data := PGInt(g_object_get_data(G_OBJECT(item), 'sa_action'));
+  if data <> nil then
+    MenuActionInvoke(TMenuAction(PtrUInt(data)));
+end;
+
+procedure Bind(Node: PMenuNode; Widget: PGtkWidget; Handler: guint);
+var
+  n: Integer;
+begin
+  n := Length(Bindings);
+  SetLength(Bindings, n + 1);
+  Bindings[n].Node := Node;
+  Bindings[n].Widget := Widget;
+  Bindings[n].Handler := Handler;
+end;
+
+procedure FillMenu(Dest: PGtkWidget; Parent: PMenuNode);
+var
+  i: Integer;
+  node: PMenuNode;
+  sub, item: PGtkWidget;
+  group: PGSList;
+  handler: guint;
+  Groups: array of record Id: Integer; List: PGSList; end;
+  gi: Integer;
+begin
+  SetLength(Groups, 0);
+  for i := 0 to High(Parent^.Sub) do
+  begin
+    node := Parent^.Sub[i];
+    case node^.Kind of
+      mkSep:
+        gtk_menu_shell_append(GTK_MENU_SHELL(Dest), gtk_separator_menu_item_new);
+      mkSubmenu:
+      begin
+        sub := gtk_menu_new;
+        FillMenu(sub, node);
+        item := gtk_menu_item_new_with_label(PChar(L(node^.Text)));
+        gtk_menu_item_set_submenu(GTK_MENU_ITEM(item), sub);
+        gtk_widget_show_all(sub);
+        gtk_menu_shell_append(GTK_MENU_SHELL(Dest), item);
+      end;
+      mkRadio:
+      begin
+        group := nil;
+        gi := Length(Groups) - 1;
+        while gi >= 0 do
+        begin
+          if Groups[gi].Id = node^.RadioGroup then
+          begin
+            group := Groups[gi].List;
+            Break;
+          end;
+          Dec(gi);
+        end;
+        item := gtk_radio_menu_item_new_with_label(group, PChar(L(node^.Text)));
+        group := gtk_radio_menu_item_get_group(GTK_RADIO_MENU_ITEM(item));
+        if gi >= 0 then
+          Groups[gi].List := group
+        else begin
+          SetLength(Groups, Length(Groups) + 1);
+          Groups[High(Groups)].Id := node^.RadioGroup;
+          Groups[High(Groups)].List := group;
+        end;
+        gtk_menu_shell_append(GTK_MENU_SHELL(Dest), item);
+        handler := g_signal_connect(item, 'toggled', TGCallback(@MenuSignalProc), nil);
+        g_object_set_data(G_OBJECT(item), 'sa_action',
+          gpointer(PtrUInt(Ord(node^.Action))));
+        Bind(node, item, handler);
+      end;
+      mkCheck:
+      begin
+        item := gtk_check_menu_item_new_with_label(PChar(L(node^.Text)));
+        gtk_menu_shell_append(GTK_MENU_SHELL(Dest), item);
+        handler := g_signal_connect(item, 'toggled', TGCallback(@MenuSignalProc), nil);
+        g_object_set_data(G_OBJECT(item), 'sa_action',
+          gpointer(PtrUInt(Ord(node^.Action))));
+        Bind(node, item, handler);
+      end;
+      mkItem:
+      begin
+        item := gtk_menu_item_new_with_label(PChar(L(node^.Text)));
+        gtk_menu_shell_append(GTK_MENU_SHELL(Dest), item);
+        handler := g_signal_connect(item, 'activate', TGCallback(@MenuSignalProc), nil);
+        g_object_set_data(G_OBJECT(item), 'sa_action',
+          gpointer(PtrUInt(Ord(node^.Action))));
+        Bind(node, item, handler);
+      end;
+    end;
+  end;
+  gtk_widget_show_all(Dest);
+end;
+
+procedure SyncStates;
+var
+  i: Integer;
+begin
+  // gtk_check_menu_item_set_active emits 'toggled', which would re-enter the
+  // action dispatcher; block each handler around the programmatic sync.
+  for i := 0 to High(Bindings) do
+    with Bindings[i] do
+      case Node^.Kind of
+        mkCheck, mkRadio:
+        begin
+          g_signal_handler_block(Widget, Handler);
+          gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(Widget),
+            MenuActionState(Node^.Action));
+          g_signal_handler_unblock(Widget, Handler);
+        end;
+      end;
+end;
+
 procedure TraySetVisual;
 var
   pb: PGdkPixbuf;
-  tip: string;
 begin
   if StatusIcon = nil then
     Exit;
@@ -198,16 +248,27 @@ begin
     Exit;
   gtk_status_icon_set_from_pixbuf(StatusIcon, pb);
   g_object_unref(pb);
-  if AppActive then
-    tip := L(STipWork)
-  else
-    tip := L(STipPause);
-  gtk_status_icon_set_tooltip(StatusIcon, PChar(tip));
+  gtk_status_icon_set_tooltip(StatusIcon, PChar(TrayTooltip));
+  SyncStates;
+end;
+
+procedure HookApplyLanguage; cdecl;
+var
+  i: Integer;
+begin
+  for i := 0 to High(Bindings) do
+    SetItemLabel(Bindings[i].Widget, L(Bindings[i].Node^.Text));
+  TraySetVisual;
+end;
+
+procedure HookRefreshVisual; cdecl;
+begin
+  TraySetVisual;
 end;
 
 procedure ShowMenuAt(status_icon: PGtkStatusIcon; button: guint; activate_time: guint32);
 begin
-  RefreshMenu;
+  SyncStates;
   gtk_menu_popup(GTK_MENU(TrayMenu), nil, nil, gtk_status_icon_position_menu, status_icon, button, activate_time);
 end;
 
@@ -228,193 +289,30 @@ begin
   ShowMenuAt(status_icon, button, activate_time);
 end;
 
-procedure TrayAwakeToggled(item: PGtkCheckMenuItem; user_data: gpointer); cdecl;
-begin
-  // Checked = prevent idle sleep; unchecked = normal system sleep policy.
-  AppActive := gtk_check_menu_item_get_active(item);
-  TraySetVisual;
-end;
-
-procedure TrayAutostartProc; cdecl;
-begin
-  // Re-entry is prevented in RefreshMenu by blocking this item's 'activate'
-  // handler during programmatic syncs.
-  if IsAutoStartEnabled then
-    DisableAutoStart
-  else
-    EnableAutoStart;
-  // Sync the checkbox immediately instead of waiting for the next popup.
-  RefreshMenu;
-end;
-
-// ---- Lid close policy (Linux, user-level, no root) -------------------------
-// Mode file: ${XDG_CONFIG_HOME:-$HOME/.config}/stayawake/lid-mode
-//   block = lid close on AC does nothing; a user-level guard
-//           (ac-lid-guard.service) holds a logind inhibitor while the AC
-//           adapter is physically present (read from /sys, immune to UPower
-//           misdetection).
-//   allow = system default (GNOME suspends on lid close).
-
-function ReadLidMode: string;
-begin
-  // Anything other than an explicit "block" is treated as "allow".
-  if ReadConfigValue(LidModeFile, 'allow') = 'block' then
-    Result := 'block'
-  else
-    Result := 'allow';
-end;
-
-procedure WriteLidMode(AMode: string);
-begin
-  WriteConfigValue(LidModeFile, AMode);
-end;
-
-procedure EnsureLidGuardRunning;
-begin
-  // Best effort: the guard is installed by src/linux/lid-guard/install.sh.
-  // If the unit is missing this silently fails and the mode file has no
-  // effect until install.sh is run.
-  g_spawn_command_line_async('systemctl --user enable --now ac-lid-guard.service', nil);
-end;
-
-procedure LidGuardToggled(item: PGtkCheckMenuItem; user_data: gpointer); cdecl;
-begin
-  if gtk_check_menu_item_get_active(item) then begin
-    WriteLidMode('block');
-    EnsureLidGuardRunning;
-  end;
-end;
-
-procedure LidSuspendToggled(item: PGtkCheckMenuItem; user_data: gpointer); cdecl;
-begin
-  if gtk_check_menu_item_get_active(item) then
-    WriteLidMode('allow');
-end;
-
-// ---- Language --------------------------------------------------------------
-
-procedure SetAllLabels;
-begin
-  SetItemLabel(TrayAwakeItem, L(SAwake));
-  SetItemLabel(LidMenuItem, L(SLidTitle));
-  SetItemLabel(LidGuardItem, L(SLidBlock));
-  SetItemLabel(LidSuspendItem, L(SLidAllow));
-  SetItemLabel(TrayAutostartItem, L(SAutoStart));
-  SetItemLabel(LangMenuItem, L(SLangTitle));
-  SetItemLabel(LangAutoItem, L(SLangAuto));
-  SetItemLabel(LangEnItem, 'English');
-  SetItemLabel(LangZhItem, '中文');
-  SetItemLabel(AboutItem, L(SAbout));
-  SetItemLabel(QuitItem, L(SQuit));
-  TraySetVisual;
-end;
-
-procedure ApplyLanguage(ALang: string);
-begin
-  WriteConfigValue(LangFilePath, ALang);
-  SetAllLabels;
-end;
-
-procedure LangAutoToggled(item: PGtkCheckMenuItem; user_data: gpointer); cdecl;
-begin
-  if gtk_check_menu_item_get_active(item) then
-    ApplyLanguage('');
-end;
-
-procedure LangEnToggled(item: PGtkCheckMenuItem; user_data: gpointer); cdecl;
-begin
-  if gtk_check_menu_item_get_active(item) then
-    ApplyLanguage('en');
-end;
-
-procedure LangZhToggled(item: PGtkCheckMenuItem; user_data: gpointer); cdecl;
-begin
-  if gtk_check_menu_item_get_active(item) then
-    ApplyLanguage('zh');
-end;
-
-procedure ShowAbout; cdecl;
-var
-  dlg: PGtkWidget;
-begin
-  dlg :=
-      gtk_message_dialog_new(
-          nil,
-          0,
-          GTK_MESSAGE_INFO,
-          GTK_BUTTONS_OK,
-          PChar(
-              APP_NAME
-                  + ' '
-                  + APP_VERSION
-                  + #10#10
-                  + 'Prevents idle sleep by moving the mouse every '
-                  + IntToStr(INTERVAL_SECS)
-                  + ' seconds.'
-                  + #10
-                  + 'Linux: lid-close policy per power state (tray menu).'
-                  + #10#10
-                  + '防止系统因「闲置」而睡眠 / 熄屏 / 锁屏。'
-                  + #10
-                  + 'Linux:合盖行为可按电源状态在托盘菜单中切换。'
-          )
-      );
-  gtk_dialog_run(GTK_DIALOG(dlg));
-  gtk_widget_destroy(dlg);
-end;
-
-procedure TrayQuit; cdecl;
-begin
-  gtk_main_quit;
-end;
-
-procedure RefreshMenu;
-var
-  Mode, Lang: string;
-begin
-  if TrayMenu = nil then
-    Exit;
-  // Single checkable row for keep-awake; block the handler while syncing.
-  // gtk_check_menu_item_set_active also emits 'activate', which would
-  // re-enter TrayAutostartProc -> RefreshMenu (infinite recursion), so the
-  // autostart handler is blocked for the sync as well.
-  g_signal_handler_block(TrayAwakeItem, AwakeHandler);
-  g_signal_handler_block(TrayAutostartItem, AutostartHandler);
-  gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(TrayAwakeItem), AppActive);
-  g_signal_handler_unblock(TrayAwakeItem, AwakeHandler);
-  gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(TrayAutostartItem), IsAutoStartEnabled);
-  g_signal_handler_unblock(TrayAutostartItem, AutostartHandler);
-
-  // Sync radios with blocked handlers: gtk_check_menu_item_set_active
-  // emits 'toggled', which would re-write the config files.
-  Mode := ReadLidMode;
-  g_signal_handler_block(LidGuardItem, LidGuardHandler);
-  g_signal_handler_block(LidSuspendItem, LidSuspendHandler);
-  gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(LidGuardItem), Mode = 'block');
-  gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(LidSuspendItem), Mode <> 'block');
-  g_signal_handler_unblock(LidGuardItem, LidGuardHandler);
-  g_signal_handler_unblock(LidSuspendItem, LidSuspendHandler);
-
-  Lang := LowerCase(ReadConfigValue(LangFilePath, ''));
-  g_signal_handler_block(LangAutoItem, LangAutoHandler);
-  g_signal_handler_block(LangEnItem, LangEnHandler);
-  g_signal_handler_block(LangZhItem, LangZhHandler);
-  gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(LangAutoItem), (Lang <> 'en') and (Lang <> 'zh'));
-  gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(LangEnItem), Lang = 'en');
-  gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(LangZhItem), Lang = 'zh');
-  g_signal_handler_unblock(LangAutoItem, LangAutoHandler);
-  g_signal_handler_unblock(LangEnItem, LangEnHandler);
-  g_signal_handler_unblock(LangZhItem, LangZhHandler);
-end;
+// ---- Entry point ------------------------------------------------------------
 
 procedure TrayCreate;
 var
   pb: PGdkPixbuf;
-  sep1, sep2, sep2b, sep3: PGtkWidget;
-  lidSubmenu, langSubmenu: PGtkWidget;
-  group: PGSList;
 begin
   gtk_init(nil, nil);
+
+  TrayConfigDir := GetEnvironmentVariable('XDG_CONFIG_HOME');
+  if TrayConfigDir = '' then
+  begin
+    TrayConfigDir := GetEnvironmentVariable('HOME');
+    if TrayConfigDir <> '' then
+      TrayConfigDir := TrayConfigDir + '/.config';
+  end;
+
+  TrayHooks.HasLid := True;
+  TrayHooks.RefreshVisual := @HookRefreshVisual;
+  TrayHooks.ApplyAwake := @HookApplyAwake;
+  TrayHooks.ApplyLidMode := @HookApplyLidMode;
+  TrayHooks.ApplyLanguage := @HookApplyLanguage;
+  TrayHooks.ShowAbout := @HookShowAbout;
+  TrayHooks.Quit := @HookQuit;
+  TraySystemLang := @HookSystemLang;
 
   pb := MakePixbuf;
   if pb = nil then
@@ -424,78 +322,24 @@ begin
   gtk_status_icon_set_visible(StatusIcon, TRUE);
   gtk_status_icon_set_tooltip(StatusIcon, 'StayAwake');
 
+  MenuRoot := BuildTrayMenu(TrayHooks.HasLid);
   TrayMenu := gtk_menu_new;
-
-  // Keep Awake: a single checkable row. Checked = prevent idle sleep;
-  // unchecked = let the system sleep normally.
-  TrayAwakeItem := gtk_check_menu_item_new_with_label(PChar(L(SAwake)));
-  sep1 := gtk_separator_menu_item_new;
-
-  // Lid close policy (Linux only, user-level guard).
-  lidSubmenu := gtk_menu_new;
-  LidGuardItem := gtk_radio_menu_item_new_with_label(nil, PChar(L(SLidBlock)));
-  group := gtk_radio_menu_item_get_group(GTK_RADIO_MENU_ITEM(LidGuardItem));
-  LidSuspendItem := gtk_radio_menu_item_new_with_label(group, PChar(L(SLidAllow)));
-  gtk_menu_shell_append(GTK_MENU_SHELL(lidSubmenu), LidGuardItem);
-  gtk_menu_shell_append(GTK_MENU_SHELL(lidSubmenu), LidSuspendItem);
-  gtk_widget_show_all(lidSubmenu);
-  LidMenuItem := gtk_menu_item_new_with_label(PChar(L(SLidTitle)));
-  gtk_menu_item_set_submenu(GTK_MENU_ITEM(LidMenuItem), lidSubmenu);
-
-  TrayAutostartItem := gtk_check_menu_item_new_with_label(PChar(L(SAutoStart)));
-  sep2b := gtk_separator_menu_item_new;
-
-  // Language switcher (persisted, applies immediately).
-  langSubmenu := gtk_menu_new;
-  LangAutoItem := gtk_radio_menu_item_new_with_label(nil, PChar(L(SLangAuto)));
-  group := gtk_radio_menu_item_get_group(GTK_RADIO_MENU_ITEM(LangAutoItem));
-  LangEnItem := gtk_radio_menu_item_new_with_label(group, 'English');
-  LangZhItem := gtk_radio_menu_item_new_with_label(group, PChar('中文'));
-  gtk_menu_shell_append(GTK_MENU_SHELL(langSubmenu), LangAutoItem);
-  gtk_menu_shell_append(GTK_MENU_SHELL(langSubmenu), LangEnItem);
-  gtk_menu_shell_append(GTK_MENU_SHELL(langSubmenu), LangZhItem);
-  gtk_widget_show_all(langSubmenu);
-  LangMenuItem := gtk_menu_item_new_with_label(PChar(L(SLangTitle)));
-  gtk_menu_item_set_submenu(GTK_MENU_ITEM(LangMenuItem), langSubmenu);
-
-  sep2 := gtk_separator_menu_item_new;
-  AboutItem := gtk_menu_item_new_with_label(PChar(L(SAbout)));
-  sep3 := gtk_separator_menu_item_new;
-  QuitItem := gtk_menu_item_new_with_label(PChar(L(SQuit)));
-
-  gtk_menu_shell_append(GTK_MENU_SHELL(TrayMenu), TrayAwakeItem);
-  gtk_menu_shell_append(GTK_MENU_SHELL(TrayMenu), sep1);
-  gtk_menu_shell_append(GTK_MENU_SHELL(TrayMenu), LidMenuItem);
-  gtk_menu_shell_append(GTK_MENU_SHELL(TrayMenu), TrayAutostartItem);
-  gtk_menu_shell_append(GTK_MENU_SHELL(TrayMenu), sep2b);
-  gtk_menu_shell_append(GTK_MENU_SHELL(TrayMenu), LangMenuItem);
-  gtk_menu_shell_append(GTK_MENU_SHELL(TrayMenu), sep2);
-  gtk_menu_shell_append(GTK_MENU_SHELL(TrayMenu), AboutItem);
-  gtk_menu_shell_append(GTK_MENU_SHELL(TrayMenu), sep3);
-  gtk_menu_shell_append(GTK_MENU_SHELL(TrayMenu), QuitItem);
-  gtk_widget_show_all(TrayMenu);
+  FillMenu(TrayMenu, MenuRoot);
 
   // Left click opens the same menu as right click: clicking the icon must
   // never change behavior silently.
   g_signal_connect(StatusIcon, 'activate', TGCallback(@TrayActivateSignal), nil);
   g_signal_connect(StatusIcon, 'popup-menu', TGCallback(@TrayPopupSignal), nil);
-  AwakeHandler := g_signal_connect(TrayAwakeItem, 'toggled', TGCallback(@TrayAwakeToggled), nil);
-  AutostartHandler := g_signal_connect(TrayAutostartItem, 'activate', TGCallback(@TrayAutostartProc), nil);
-  LidGuardHandler := g_signal_connect(LidGuardItem, 'toggled', TGCallback(@LidGuardToggled), nil);
-  LidSuspendHandler := g_signal_connect(LidSuspendItem, 'toggled', TGCallback(@LidSuspendToggled), nil);
-  LangAutoHandler := g_signal_connect(LangAutoItem, 'toggled', TGCallback(@LangAutoToggled), nil);
-  LangEnHandler := g_signal_connect(LangEnItem, 'toggled', TGCallback(@LangEnToggled), nil);
-  LangZhHandler := g_signal_connect(LangZhItem, 'toggled', TGCallback(@LangZhToggled), nil);
-  g_signal_connect(AboutItem, 'activate', TGCallback(@ShowAbout), nil);
-  g_signal_connect(QuitItem, 'activate', TGCallback(@TrayQuit), nil);
 
-  RefreshMenu;
-  SetAllLabels; // default language follows locale until the user picks one
+  TraySetVisual;
   // Self-heal: if the user opted into "Do Nothing" and the guard service is
   // not running (e.g. fresh login with a stale unit), bring it back up.
-  if ReadLidMode = 'block' then
-    EnsureLidGuardRunning;
+  if LidMode = 'block' then
+    HookApplyLidMode;
   gtk_main;
 end;
+
+finalization
+  FreeTrayMenu(MenuRoot);
 
 end.
