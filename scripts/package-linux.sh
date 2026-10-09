@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # Package the Linux build into a distributable tar.gz.
-# Usage: ./package-linux.sh [arch]
+# Usage: ./scripts/package-linux.sh [arch]
 #   arch: x86_64|i386|aarch64|arm (default: native architecture).
 # Builds first (delegates to build-linux.sh), then stages:
 #   stayawake                       main binary (GTK2 + X11/libXtst runtime)
@@ -14,7 +14,7 @@
 
 set -e
 
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 ARCH="${1:-}"
 case "$ARCH" in
@@ -23,7 +23,7 @@ case "$ARCH" in
 esac
 
 # Build first (build-linux.sh defaults to the native arch without an arg).
-"$ROOT/build-linux.sh" ${ARCH:+"$ARCH"}
+"$ROOT/scripts/build-linux.sh" ${ARCH:+"$ARCH"}
 
 if [ -z "$ARCH" ]; then
   native="$(uname -m)"
@@ -45,7 +45,7 @@ mkdir -p "$STAGE/lid-guard"
 
 cp "$DEST/stayawake" "$STAGE/stayawake"
 for f in ac-lid-guard.sh ac-lid-guard.service install.sh uninstall.sh; do
-  cp "$ROOT/linux/lid-guard/$f" "$STAGE/lid-guard/$f"
+  cp "$ROOT/src/linux/lid-guard/$f" "$STAGE/lid-guard/$f"
 done
 
 cat > "$STAGE/lid-guard/README.txt" <<'EOF'

@@ -2,7 +2,7 @@
 
 # Cross-compile StayAwake for Windows from Linux (no Windows machine needed).
 #
-# Usage: ./build-cross.sh [win64|win32|both]   (default: both)
+# Usage: ./scripts/build-cross.sh [win64|win32|both]   (default: both)
 #
 # Output mirrors build.cmd:
 #   out/windows/x86_64/stayawake.exe
@@ -21,7 +21,7 @@
 # plain 'apt-get install fp-compiler-3.2.2:i386' path fail.
 set -e
 
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="$ROOT/src"
 OUT="$ROOT/out/windows"
 MODE="${1:-both}"

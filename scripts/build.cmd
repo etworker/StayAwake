@@ -20,7 +20,7 @@ if /i "%TARGET%"=="win64" (
   exit /b 1
 )
 
-set ROOT=%~dp0
+set ROOT=%~dp0..\
 set SRC=%ROOT%src
 set OUT=%ROOT%out\%OUTDIR%
 if not exist "%OUT%\units" mkdir "%OUT%\units"

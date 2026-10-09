@@ -7,7 +7,7 @@
 
 set -e
 
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/out"
 
 if [ ! -d "$OUT" ]; then

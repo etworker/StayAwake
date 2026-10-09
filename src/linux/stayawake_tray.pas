@@ -1,6 +1,7 @@
 unit stayawake_tray;
 
-{$mode objfpc}{$H+}
+{$MODE objfpc}
+{$H+}
 
 interface
 
@@ -14,7 +15,11 @@ uses
   stayawake_common,
   stayawake_autostart,
   ctypes,
-  gtk2, glib2, gdk2, gdk2pixbuf, gtk2ext;
+  gtk2,
+  glib2,
+  gdk2,
+  gdk2pixbuf,
+  gtk2ext;
 
 type
   TTrayLang = (tlEn, tlZh);
@@ -23,28 +28,17 @@ type
 const
   // All user-visible strings, per language. Menu labels state the action
   // and its consequence so each item is unambiguous.
-  SAwake: TStrMap = (
-    'Keep Awake (block idle sleep)', '保持清醒(阻止闲置睡眠)');
-  SLidTitle: TStrMap = (
-    'Lid Close on AC Power', '合盖行为(接电源时)');
-  SLidBlock: TStrMap = (
-    'Do Nothing (Guard blocks sleep)', '不动作(守卫拦截睡眠)');
-  SLidAllow: TStrMap = (
-    'Suspend (system default)', '睡眠(系统默认)');
-  SAutoStart: TStrMap = (
-    'Run at Login', '开机自启');
-  SLangTitle: TStrMap = (
-    'Language', '语言 / Language');
-  SLangAuto: TStrMap = (
-    'Follow System', '跟随系统');
-  SAbout: TStrMap = (
-    'About StayAwake', '关于 StayAwake');
-  SQuit: TStrMap = (
-    'Quit', '退出');
-  STipWork: TStrMap = (
-    'StayAwake - preventing sleep', 'StayAwake - 防睡中');
-  STipPause: TStrMap = (
-    'StayAwake - paused', 'StayAwake - 已暂停');
+  SAwake: TStrMap = ('Keep Awake (block idle sleep)', '保持清醒(阻止闲置睡眠)');
+  SLidTitle: TStrMap = ('Lid Close on AC Power', '合盖行为(接电源时)');
+  SLidBlock: TStrMap = ('Do Nothing (Guard blocks sleep)', '不动作(守卫拦截睡眠)');
+  SLidAllow: TStrMap = ('Suspend (system default)', '睡眠(系统默认)');
+  SAutoStart: TStrMap = ('Run at Login', '开机自启');
+  SLangTitle: TStrMap = ('Language', '语言 / Language');
+  SLangAuto: TStrMap = ('Follow System', '跟随系统');
+  SAbout: TStrMap = ('About StayAwake', '关于 StayAwake');
+  SQuit: TStrMap = ('Quit', '退出');
+  STipWork: TStrMap = ('StayAwake - preventing sleep', 'StayAwake - 防睡中');
+  STipPause: TStrMap = ('StayAwake - paused', 'StayAwake - 已暂停');
 
 var
   StatusIcon: PGtkStatusIcon = nil;
@@ -211,24 +205,25 @@ begin
   gtk_status_icon_set_tooltip(StatusIcon, PChar(tip));
 end;
 
-procedure ShowMenuAt(status_icon: PGtkStatusIcon; button: guint;
-  activate_time: guint32);
+procedure ShowMenuAt(status_icon: PGtkStatusIcon; button: guint; activate_time: guint32);
 begin
   RefreshMenu;
-  gtk_menu_popup(GTK_MENU(TrayMenu), nil, nil, gtk_status_icon_position_menu,
-    status_icon, button, activate_time);
+  gtk_menu_popup(GTK_MENU(TrayMenu), nil, nil, gtk_status_icon_position_menu, status_icon, button, activate_time);
 end;
 
 // Left click opens the same menu as right click: clicking the icon must
 // never change behavior silently.
-procedure TrayActivateSignal(status_icon: PGtkStatusIcon;
-  user_data: gpointer); cdecl;
+procedure TrayActivateSignal(status_icon: PGtkStatusIcon; user_data: gpointer); cdecl;
 begin
   ShowMenuAt(status_icon, 1, gtk_get_current_event_time);
 end;
 
-procedure TrayPopupSignal(status_icon: PGtkStatusIcon; button: guint;
-  activate_time: guint32; user_data: gpointer); cdecl;
+procedure TrayPopupSignal(
+    status_icon: PGtkStatusIcon;
+    button: guint;
+    activate_time: guint32;
+    user_data: gpointer
+); cdecl;
 begin
   ShowMenuAt(status_icon, button, activate_time);
 end;
@@ -276,17 +271,15 @@ end;
 
 procedure EnsureLidGuardRunning;
 begin
-  // Best effort: the guard is installed by linux/lid-guard/install.sh.
+  // Best effort: the guard is installed by src/linux/lid-guard/install.sh.
   // If the unit is missing this silently fails and the mode file has no
   // effect until install.sh is run.
-  g_spawn_command_line_async(
-    'systemctl --user enable --now ac-lid-guard.service', nil);
+  g_spawn_command_line_async('systemctl --user enable --now ac-lid-guard.service', nil);
 end;
 
 procedure LidGuardToggled(item: PGtkCheckMenuItem; user_data: gpointer); cdecl;
 begin
-  if gtk_check_menu_item_get_active(item) then
-  begin
+  if gtk_check_menu_item_get_active(item) then begin
     WriteLidMode('block');
     EnsureLidGuardRunning;
   end;
@@ -344,13 +337,28 @@ procedure ShowAbout; cdecl;
 var
   dlg: PGtkWidget;
 begin
-  dlg := gtk_message_dialog_new(nil, 0, GTK_MESSAGE_INFO, GTK_BUTTONS_OK,
-    PChar(APP_NAME + ' ' + APP_VERSION + #10#10 +
-          'Prevents idle sleep by moving the mouse every ' +
-          IntToStr(INTERVAL_SECS) + ' seconds.' + #10 +
-          'Linux: lid-close policy per power state (tray menu).' + #10#10 +
-          '防止系统因「闲置」而睡眠 / 熄屏 / 锁屏。' + #10 +
-          'Linux:合盖行为可按电源状态在托盘菜单中切换。'));
+  dlg :=
+      gtk_message_dialog_new(
+          nil,
+          0,
+          GTK_MESSAGE_INFO,
+          GTK_BUTTONS_OK,
+          PChar(
+              APP_NAME
+                  + ' '
+                  + APP_VERSION
+                  + #10#10
+                  + 'Prevents idle sleep by moving the mouse every '
+                  + IntToStr(INTERVAL_SECS)
+                  + ' seconds.'
+                  + #10
+                  + 'Linux: lid-close policy per power state (tray menu).'
+                  + #10#10
+                  + '防止系统因「闲置」而睡眠 / 熄屏 / 锁屏。'
+                  + #10
+                  + 'Linux:合盖行为可按电源状态在托盘菜单中切换。'
+          )
+      );
   gtk_dialog_run(GTK_DIALOG(dlg));
   gtk_widget_destroy(dlg);
 end;
@@ -374,8 +382,7 @@ begin
   g_signal_handler_block(TrayAutostartItem, AutostartHandler);
   gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(TrayAwakeItem), AppActive);
   g_signal_handler_unblock(TrayAwakeItem, AwakeHandler);
-  gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(TrayAutostartItem),
-    IsAutoStartEnabled);
+  gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(TrayAutostartItem), IsAutoStartEnabled);
   g_signal_handler_unblock(TrayAutostartItem, AutostartHandler);
 
   // Sync radios with blocked handlers: gtk_check_menu_item_set_active
@@ -383,10 +390,8 @@ begin
   Mode := ReadLidMode;
   g_signal_handler_block(LidGuardItem, LidGuardHandler);
   g_signal_handler_block(LidSuspendItem, LidSuspendHandler);
-  gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(LidGuardItem),
-    Mode = 'block');
-  gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(LidSuspendItem),
-    Mode <> 'block');
+  gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(LidGuardItem), Mode = 'block');
+  gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(LidSuspendItem), Mode <> 'block');
   g_signal_handler_unblock(LidGuardItem, LidGuardHandler);
   g_signal_handler_unblock(LidSuspendItem, LidSuspendHandler);
 
@@ -394,8 +399,7 @@ begin
   g_signal_handler_block(LangAutoItem, LangAutoHandler);
   g_signal_handler_block(LangEnItem, LangEnHandler);
   g_signal_handler_block(LangZhItem, LangZhHandler);
-  gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(LangAutoItem),
-    (Lang <> 'en') and (Lang <> 'zh'));
+  gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(LangAutoItem), (Lang <> 'en') and (Lang <> 'zh'));
   gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(LangEnItem), Lang = 'en');
   gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(LangZhItem), Lang = 'zh');
   g_signal_handler_unblock(LangAutoItem, LangAutoHandler);
@@ -475,19 +479,13 @@ begin
   // never change behavior silently.
   g_signal_connect(StatusIcon, 'activate', TGCallback(@TrayActivateSignal), nil);
   g_signal_connect(StatusIcon, 'popup-menu', TGCallback(@TrayPopupSignal), nil);
-  AwakeHandler := g_signal_connect(TrayAwakeItem, 'toggled',
-    TGCallback(@TrayAwakeToggled), nil);
+  AwakeHandler := g_signal_connect(TrayAwakeItem, 'toggled', TGCallback(@TrayAwakeToggled), nil);
   AutostartHandler := g_signal_connect(TrayAutostartItem, 'activate', TGCallback(@TrayAutostartProc), nil);
-  LidGuardHandler := g_signal_connect(LidGuardItem, 'toggled',
-    TGCallback(@LidGuardToggled), nil);
-  LidSuspendHandler := g_signal_connect(LidSuspendItem, 'toggled',
-    TGCallback(@LidSuspendToggled), nil);
-  LangAutoHandler := g_signal_connect(LangAutoItem, 'toggled',
-    TGCallback(@LangAutoToggled), nil);
-  LangEnHandler := g_signal_connect(LangEnItem, 'toggled',
-    TGCallback(@LangEnToggled), nil);
-  LangZhHandler := g_signal_connect(LangZhItem, 'toggled',
-    TGCallback(@LangZhToggled), nil);
+  LidGuardHandler := g_signal_connect(LidGuardItem, 'toggled', TGCallback(@LidGuardToggled), nil);
+  LidSuspendHandler := g_signal_connect(LidSuspendItem, 'toggled', TGCallback(@LidSuspendToggled), nil);
+  LangAutoHandler := g_signal_connect(LangAutoItem, 'toggled', TGCallback(@LangAutoToggled), nil);
+  LangEnHandler := g_signal_connect(LangEnItem, 'toggled', TGCallback(@LangEnToggled), nil);
+  LangZhHandler := g_signal_connect(LangZhItem, 'toggled', TGCallback(@LangZhToggled), nil);
   g_signal_connect(AboutItem, 'activate', TGCallback(@ShowAbout), nil);
   g_signal_connect(QuitItem, 'activate', TGCallback(@TrayQuit), nil);
 

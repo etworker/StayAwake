@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # Build StayAwake for Linux.
-# Usage: ./build-linux.sh [arch]
+# Usage: ./scripts/build-linux.sh [arch]  (from the repo root)
 #   arch: x86_64|i386|aarch64|arm (default: native architecture).
 # Set FPC to a full path to fpc if it is not on PATH.
 # Output: out/linux/<arch>/stayawake (binary) + out/linux/<arch>/units (intermediates),
@@ -9,8 +9,8 @@
 
 set -e
 
-SRC="$(cd "$(dirname "$0")" && pwd)/src"
-OUT="$(cd "$(dirname "$0")" && pwd)/out/linux"
+SRC="$(cd "$(dirname "$0")/.." && pwd)/src"
+OUT="$(cd "$(dirname "$0")/.." && pwd)/out/linux"
 FPC="${FPC:-fpc}"
 
 MODE="${1:-}"

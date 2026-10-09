@@ -1,15 +1,15 @@
 #!/bin/sh
 
 # Build StayAwake for macOS.
-# Usage: ./build-macos.sh [arch...|universal]
+# Usage: ./scripts/build-macos.sh [arch...|universal]
 #   arch: one or more of arm64 x86_64 (default: both, into separate per-arch dirs).
 #   universal: build both arm64 + x86_64 and merge into one fat binary via lipo.
 # Set FPC to a full path to fpc if it is not on PATH.
 
 set -e
 
-SRC="$(cd "$(dirname "$0")" && pwd)/src"
-OUT="$(cd "$(dirname "$0")" && pwd)/out/macos"
+SRC="$(cd "$(dirname "$0")/.." && pwd)/src"
+OUT="$(cd "$(dirname "$0")/.." && pwd)/out/macos"
 FPC="${FPC:-fpc}"
 
 # Single source of truth for the version is APP_VERSION in
@@ -104,7 +104,7 @@ case "$MODE" in
     [ "$ok" = 1 ] || { echo "!! some architectures failed to build" >&2; exit 1; }
     ;;
   *)
-    # Explicit arch list, e.g. "./build-macos.sh arm64" or "x86_64 arm64".
+    # Explicit arch list, e.g. "./scripts/build-macos.sh arm64" or "x86_64 arm64".
     ok=1
     for arch in $MODE; do
       case "$arch" in
