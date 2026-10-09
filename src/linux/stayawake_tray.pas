@@ -23,10 +23,8 @@ type
 const
   // All user-visible strings, per language. Menu labels state the action
   // and its consequence so each item is unambiguous.
-  SResume: TStrMap = (
-    'Resume - prevent idle sleep', '恢复防睡(阻止闲置睡眠)');
-  SPause: TStrMap = (
-    'Pause - allow idle sleep', '暂停防睡(允许闲置睡眠)');
+  SAwake: TStrMap = (
+    'Keep Awake (block idle sleep)', '保持清醒(阻止闲置睡眠)');
   SLidTitle: TStrMap = (
     'Lid Close on AC Power', '合盖行为(接电源时)');
   SLidBlock: TStrMap = (
@@ -37,6 +35,8 @@ const
     'Run at Login', '开机自启');
   SLangTitle: TStrMap = (
     'Language', '语言 / Language');
+  SLangAuto: TStrMap = (
+    'Follow System', '跟随系统');
   SAbout: TStrMap = (
     'About StayAwake', '关于 StayAwake');
   SQuit: TStrMap = (
@@ -49,19 +49,21 @@ const
 var
   StatusIcon: PGtkStatusIcon = nil;
   TrayMenu: PGtkWidget = nil;
-  TrayPauseItem: PGtkWidget = nil;
-  TrayResumeItem: PGtkWidget = nil;
+  TrayAwakeItem: PGtkWidget = nil;
   TrayAutostartItem: PGtkWidget = nil;
   LidMenuItem: PGtkWidget = nil;
   LidGuardItem: PGtkWidget = nil;
   LidSuspendItem: PGtkWidget = nil;
   LangMenuItem: PGtkWidget = nil;
+  LangAutoItem: PGtkWidget = nil;
   LangEnItem: PGtkWidget = nil;
   LangZhItem: PGtkWidget = nil;
   AboutItem: PGtkWidget = nil;
   QuitItem: PGtkWidget = nil;
+  AwakeHandler: guint = 0;
   LidGuardHandler: guint = 0;
   LidSuspendHandler: guint = 0;
+  LangAutoHandler: guint = 0;
   LangEnHandler: guint = 0;
   LangZhHandler: guint = 0;
 
@@ -230,22 +232,11 @@ begin
   ShowMenuAt(status_icon, button, activate_time);
 end;
 
-procedure TrayPauseProc; cdecl;
+procedure TrayAwakeToggled(item: PGtkCheckMenuItem; user_data: gpointer); cdecl;
 begin
-  if AppActive then
-  begin
-    AppActive := False;
-    TraySetVisual;
-  end;
-end;
-
-procedure TrayResumeProc; cdecl;
-begin
-  if not AppActive then
-  begin
-    AppActive := True;
-    TraySetVisual;
-  end;
+  // Checked = prevent idle sleep; unchecked = normal system sleep policy.
+  AppActive := gtk_check_menu_item_get_active(item);
+  TraySetVisual;
 end;
 
 procedure TrayAutostartProc; cdecl;
@@ -254,6 +245,8 @@ begin
     DisableAutoStart
   else
     EnableAutoStart;
+  // Sync the checkbox immediately instead of waiting for the next popup.
+  RefreshMenu;
 end;
 
 // ---- Lid close policy (Linux, user-level, no root) -------------------------
@@ -306,13 +299,13 @@ end;
 
 procedure SetAllLabels;
 begin
-  SetItemLabel(TrayResumeItem, L(SResume));
-  SetItemLabel(TrayPauseItem, L(SPause));
+  SetItemLabel(TrayAwakeItem, L(SAwake));
   SetItemLabel(LidMenuItem, L(SLidTitle));
   SetItemLabel(LidGuardItem, L(SLidBlock));
   SetItemLabel(LidSuspendItem, L(SLidAllow));
   SetItemLabel(TrayAutostartItem, L(SAutoStart));
   SetItemLabel(LangMenuItem, L(SLangTitle));
+  SetItemLabel(LangAutoItem, L(SLangAuto));
   SetItemLabel(LangEnItem, 'English');
   SetItemLabel(LangZhItem, '中文');
   SetItemLabel(AboutItem, L(SAbout));
@@ -324,6 +317,12 @@ procedure ApplyLanguage(ALang: string);
 begin
   WriteConfigValue(LangFilePath, ALang);
   SetAllLabels;
+end;
+
+procedure LangAutoToggled(item: PGtkCheckMenuItem; user_data: gpointer); cdecl;
+begin
+  if gtk_check_menu_item_get_active(item) then
+    ApplyLanguage('');
 end;
 
 procedure LangEnToggled(item: PGtkCheckMenuItem; user_data: gpointer); cdecl;
@@ -364,8 +363,10 @@ var
 begin
   if TrayMenu = nil then
     Exit;
-  gtk_widget_set_sensitive(TrayResumeItem, not AppActive);
-  gtk_widget_set_sensitive(TrayPauseItem, AppActive);
+  // Single checkable row for keep-awake; block the handler while syncing.
+  g_signal_handler_block(TrayAwakeItem, AwakeHandler);
+  gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(TrayAwakeItem), AppActive);
+  g_signal_handler_unblock(TrayAwakeItem, AwakeHandler);
   gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(TrayAutostartItem),
     IsAutoStartEnabled);
 
@@ -382,10 +383,14 @@ begin
   g_signal_handler_unblock(LidSuspendItem, LidSuspendHandler);
 
   Lang := LowerCase(ReadConfigValue(LangFilePath, ''));
+  g_signal_handler_block(LangAutoItem, LangAutoHandler);
   g_signal_handler_block(LangEnItem, LangEnHandler);
   g_signal_handler_block(LangZhItem, LangZhHandler);
+  gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(LangAutoItem),
+    (Lang <> 'en') and (Lang <> 'zh'));
   gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(LangEnItem), Lang = 'en');
   gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(LangZhItem), Lang = 'zh');
+  g_signal_handler_unblock(LangAutoItem, LangAutoHandler);
   g_signal_handler_unblock(LangEnItem, LangEnHandler);
   g_signal_handler_unblock(LangZhItem, LangZhHandler);
 end;
@@ -409,9 +414,9 @@ begin
 
   TrayMenu := gtk_menu_new;
 
-  // Pause / Resume: one precise action per row, sensitivity mirrors state.
-  TrayResumeItem := gtk_menu_item_new_with_label(PChar(L(SResume)));
-  TrayPauseItem := gtk_menu_item_new_with_label(PChar(L(SPause)));
+  // Keep Awake: a single checkable row. Checked = prevent idle sleep;
+  // unchecked = let the system sleep normally.
+  TrayAwakeItem := gtk_check_menu_item_new_with_label(PChar(L(SAwake)));
   sep1 := gtk_separator_menu_item_new;
 
   // Lid close policy (Linux only, user-level guard).
@@ -430,9 +435,11 @@ begin
 
   // Language switcher (persisted, applies immediately).
   langSubmenu := gtk_menu_new;
-  LangEnItem := gtk_radio_menu_item_new_with_label(nil, 'English');
-  group := gtk_radio_menu_item_get_group(GTK_RADIO_MENU_ITEM(LangEnItem));
+  LangAutoItem := gtk_radio_menu_item_new_with_label(nil, PChar(L(SLangAuto)));
+  group := gtk_radio_menu_item_get_group(GTK_RADIO_MENU_ITEM(LangAutoItem));
+  LangEnItem := gtk_radio_menu_item_new_with_label(group, 'English');
   LangZhItem := gtk_radio_menu_item_new_with_label(group, PChar('中文'));
+  gtk_menu_shell_append(GTK_MENU_SHELL(langSubmenu), LangAutoItem);
   gtk_menu_shell_append(GTK_MENU_SHELL(langSubmenu), LangEnItem);
   gtk_menu_shell_append(GTK_MENU_SHELL(langSubmenu), LangZhItem);
   gtk_widget_show_all(langSubmenu);
@@ -444,8 +451,7 @@ begin
   sep3 := gtk_separator_menu_item_new;
   QuitItem := gtk_menu_item_new_with_label(PChar(L(SQuit)));
 
-  gtk_menu_shell_append(GTK_MENU_SHELL(TrayMenu), TrayResumeItem);
-  gtk_menu_shell_append(GTK_MENU_SHELL(TrayMenu), TrayPauseItem);
+  gtk_menu_shell_append(GTK_MENU_SHELL(TrayMenu), TrayAwakeItem);
   gtk_menu_shell_append(GTK_MENU_SHELL(TrayMenu), sep1);
   gtk_menu_shell_append(GTK_MENU_SHELL(TrayMenu), LidMenuItem);
   gtk_menu_shell_append(GTK_MENU_SHELL(TrayMenu), TrayAutostartItem);
@@ -461,13 +467,15 @@ begin
   // never change behavior silently.
   g_signal_connect(StatusIcon, 'activate', TGCallback(@TrayActivateSignal), nil);
   g_signal_connect(StatusIcon, 'popup-menu', TGCallback(@TrayPopupSignal), nil);
-  g_signal_connect(TrayResumeItem, 'activate', TGCallback(@TrayResumeProc), nil);
-  g_signal_connect(TrayPauseItem, 'activate', TGCallback(@TrayPauseProc), nil);
+  AwakeHandler := g_signal_connect(TrayAwakeItem, 'toggled',
+    TGCallback(@TrayAwakeToggled), nil);
   g_signal_connect(TrayAutostartItem, 'activate', TGCallback(@TrayAutostartProc), nil);
   LidGuardHandler := g_signal_connect(LidGuardItem, 'toggled',
     TGCallback(@LidGuardToggled), nil);
   LidSuspendHandler := g_signal_connect(LidSuspendItem, 'toggled',
     TGCallback(@LidSuspendToggled), nil);
+  LangAutoHandler := g_signal_connect(LangAutoItem, 'toggled',
+    TGCallback(@LangAutoToggled), nil);
   LangEnHandler := g_signal_connect(LangEnItem, 'toggled',
     TGCallback(@LangEnToggled), nil);
   LangZhHandler := g_signal_connect(LangZhItem, 'toggled',
