@@ -60,7 +60,7 @@
 
 - 实测结论：持有 IOKit `PreventSystemSleep` 断言时合盖仍进入 Clamshell Sleep（Apple Silicon、插电、断言先于合盖 4 分钟创建）——**用户态断言在当前 macOS 上不覆盖合盖路径**，生态内工具（Lunar / Amphetamine 等）同样只能依赖 `pmset disablesleep`；
 - 菜单的勾选状态**直接反映 pmset 真实状态**：解析 `pmset -g` 的 `SleepDisabled` 标志行（经 libc `popen` 读取）。注意 `disablesleep` 设置**不会**出现在 `pmset -g custom` 的列表中（首版解析源即错于此，实测修正）；
-- 点选某一项时，若真实状态与之不符，弹出引导对话框：给出对应的一次性命令（`sudo pmset -a disablesleep 1` / `... 0`）并自动复制到剪贴板，粘贴执行后菜单在下次打开时如实反映；
+- 点选某一项时，若真实状态与之不符，**直接弹出 macOS 标准管理员密码框**（`AuthorizationExecuteWithPrivileges` 运行 `pmset -a disablesleep …`），输一次密码即生效，无需终端；复制命令的引导对话框保留为降级路径（授权 API 不可用时）；
 - `disablesleep` 对电池同样生效（合盖一律不睡）；恢复使用 `sudo pmset -a disablesleep 0`（对话框中一并给出）。
 
 ### Windows：不提供

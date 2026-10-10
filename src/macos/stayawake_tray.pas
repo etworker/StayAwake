@@ -161,18 +161,17 @@ begin
     info :=
         'macOS 不允许普通应用拦截合盖睡眠,需要一次性管理员命令(终端中执行):' + #10#10 +
         cmd + #10#10 +
-        '设置后插电合盖将不再睡眠(电池不受影响);' + #10 +
+        '设置后插电合盖将不再睡眠;' + #10 +
         '恢复命令:sudo pmset -a disablesleep 0' + #10#10 +
-        '已复制到剪贴板,粘贴到终端回车即可。菜单勾选状态反映真实设置。' + #10 +
-        'macOS 不允许普通应用拦截合盖,以上命令需要管理员权限。';
+        '点「复制命令」后在终端粘贴执行即可(此为备选路径,正常情况会直接弹出系统密码框)。';
   end
   else
   begin
     cmd := SDisableCmd;
     info :=
-        '恢复 macOS 默认合盖行为,请在终端执行一次性命令:' + #10#10 +
+        '恢复 macOS 默认合盖行为,请执行一次性命令:' + #10#10 +
         cmd + #10#10 +
-        '已复制到剪贴板,粘贴到终端回车即可。菜单勾选状态反映真实设置。';
+        '点「复制命令」后在终端粘贴执行即可(此为备选路径,正常情况会直接弹出系统密码框)。';
   end;
   alert := NSAlert.alloc.init;
   alert.setMessageText(NSString.stringWithUTF8String(PChar(L(SLidTitle))));
@@ -184,6 +183,63 @@ begin
   alert.release;
 end;
 
+// Run `pmset -a disablesleep <0|1>` as root through the standard macOS
+// authorization dialog (AuthorizationExecuteWithPrivileges): the user types
+// their account password once, the command runs, no terminal involved.
+// Returns True when pmset reported success; False on cancel/failure.
+function RunRootDisableSleep(ABlock: Boolean): Boolean;
+const
+  kAuthorizationFlagDefaults = 0;
+  kAuthorizationFlagDestroyRights = 8;
+  errAuthorizationCanceled = -60005;
+type
+  TAuthorizationCreate = function(rights: Pointer; environment: Pointer;
+    flags: cuint32; var auth: Pointer): cint; cdecl;
+  TAuthorizationExecuteWithPrivileges = function(auth: Pointer; path: PAnsiChar;
+    flags: cuint32; args: PAnsiChar; pipe: Pointer): cint; cdecl;
+  TAuthorizationFree = function(auth: Pointer; flags: cuint32): cint; cdecl;
+var
+  SecHandle: TLibHandle;
+  aCreate: TAuthorizationCreate;
+  aExec: TAuthorizationExecuteWithPrivileges;
+  aFree: TAuthorizationFree;
+  auth: Pointer = nil;
+  args: array[0..3] of PAnsiChar;
+  status: cint;
+begin
+  Result := False;
+  SecHandle := LoadLibrary('/System/Library/Frameworks/Security.framework/Security');
+  if SecHandle = NilHandle then
+    Exit;
+  Pointer(aCreate) := GetProcAddress(SecHandle, 'AuthorizationCreate');
+  Pointer(aExec) := GetProcAddress(SecHandle, 'AuthorizationExecuteWithPrivileges');
+  Pointer(aFree) := GetProcAddress(SecHandle, 'AuthorizationFree');
+  if (aCreate = nil) or (aExec = nil) or (aFree = nil) then
+    Exit;
+
+  if ABlock then
+    args[2] := '1'
+  else
+    args[2] := '0';
+  args[0] := '-a';
+  args[1] := 'disablesleep';
+  args[3] := nil;
+
+  if aCreate(nil, nil, kAuthorizationFlagDefaults, auth) = 0 then
+  begin
+    // Shows the standard administrator-password dialog when needed.
+    status := aExec(auth, '/usr/bin/pmset', kAuthorizationFlagDefaults,
+      PAnsiChar(@args[0]), nil);
+    if status = 0 then
+      Result := True
+    else if status = errAuthorizationCanceled then
+      Exit            // user dismissed the password dialog: do nothing
+    else
+      Result := False;
+    aFree(auth, kAuthorizationFlagDestroyRights);
+  end;
+end;
+
 procedure HookLidRequest(ABlock: Boolean); cdecl;
 var
   now: Boolean;
@@ -191,7 +247,11 @@ begin
   now := HookLidState;
   if ABlock = now then
     Exit; // already in the requested state
-  ShowLidGuideDialog(ABlock);
+  // Caffeine-style flow: native password dialog runs the command directly.
+  // The copy-to-clipboard guide stays as fallback for systems where the
+  // authorization API is unavailable.
+  if not RunRootDisableSleep(ABlock) then
+    ShowLidGuideDialog(ABlock);
   if Assigned(TrayHooks.RefreshVisual) then
     TrayHooks.RefreshVisual;
 end;
