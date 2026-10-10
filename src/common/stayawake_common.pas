@@ -72,10 +72,15 @@ type
     HasLid: Boolean;                 // False on Windows (no lid feature)
     RefreshVisual: procedure; cdecl; // icon + tooltip + menu state re-sync
     ApplyAwake: procedure; cdecl;    // AppActive just changed: update assertions/nudge
-    ApplyLidMode: procedure; cdecl;  // lid-mode file just changed: apply guard
+    ApplyLidMode: procedure; cdecl;  // lid-mode file just changed: apply guard (Linux)
     ApplyLanguage: procedure; cdecl; // language file just changed: relabel everything
     ShowAbout: procedure; cdecl;
     Quit: procedure; cdecl;
+    // External lid-state mechanism (macOS): when LidState is set, the menu's
+    // lid radio reflects LidState() instead of the mode file, and lid clicks
+    // are routed to LidRequest instead of writing the file.
+    LidState: function: Boolean; cdecl;             // True = "block" effective
+    LidRequest: procedure(ABlock: Boolean); cdecl;  // user picked a lid radio
   end;
 
 var
@@ -417,8 +422,14 @@ begin
   case A of
     maToggleAwake: Result := AppActive;
     maAutostart:   Result := IsAutoStartEnabled;
-    maLidBlock:    Result := LidMode = 'block';
-    maLidAllow:    Result := LidMode <> 'block';
+    maLidBlock:    if Assigned(TrayHooks.LidState) then
+                     Result := TrayHooks.LidState()
+                   else
+                     Result := LidMode = 'block';
+    maLidAllow:    if Assigned(TrayHooks.LidState) then
+                     Result := not TrayHooks.LidState()
+                   else
+                     Result := LidMode <> 'block';
     maLangAuto:    Result := (CurrentLangStored <> 'en') and (CurrentLangStored <> 'zh');
     maLangEn:      Result := CurrentLangStored = 'en';
     maLangZh:      Result := CurrentLangStored = 'zh';
@@ -447,8 +458,16 @@ begin
       if Assigned(TrayHooks.RefreshVisual) then
         TrayHooks.RefreshVisual;
     end;
-    maLidBlock:  SetLidMode('block');
-    maLidAllow:  SetLidMode('allow');
+    maLidBlock:
+      if Assigned(TrayHooks.LidRequest) then
+        TrayHooks.LidRequest(True)
+      else
+        SetLidMode('block');
+    maLidAllow:
+      if Assigned(TrayHooks.LidRequest) then
+        TrayHooks.LidRequest(False)
+      else
+        SetLidMode('allow');
     maLangAuto:  ApplyLanguage('');
     maLangEn:    ApplyLanguage('en');
     maLangZh:    ApplyLanguage('zh');

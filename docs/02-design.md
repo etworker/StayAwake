@@ -56,11 +56,12 @@
 - 守卫进程在**插电**时持有 logind inhibitor 锁拦截合盖睡眠；电源状态直接读内核 `/sys`，因此免疫 GNOME/UPower 的电源误判（实测修复过 XPS 13 + Ubuntu 22.04 上「插着电却被按电池策略合盖睡眠」的案例）；
 - 切到「不动作」时托盘调用 `systemctl --user enable --now` 自愈拉起服务；电池合盖始终系统默认。
 
-### macOS：PreventSystemSleep 断言
+### macOS：引导式管理员命令
 
-- 「不动作」= 持有 IOKit `PreventSystemSleep` 断言；「睡眠」= 释放；
-- **powerd 只在接电源时采纳该断言类型**，电池合盖自动回落系统默认——平台自身实现了 AC 条件，无需自行探测电源状态（实测 `IOPSCopyPowerSourcesList` 在 FPC/arm64 下调用崩溃，且本质上不必需要）；
-- 仅 Apple Silicon 实际生效（Intel 的合盖走 SMC 平台层，用户态断言无法否决）；Intel 上选项不报错但无效，文档如实标注。
+- 实测结论：持有 IOKit `PreventSystemSleep` 断言时合盖仍进入 Clamshell Sleep（Apple Silicon、插电、断言先于合盖 4 分钟创建）——**用户态断言在当前 macOS 上不覆盖合盖路径**，生态内工具（Lunar / Amphetamine 等）同样只能依赖 `pmset disablesleep`；
+- 菜单的勾选状态**直接反映 pmset 真实状态**（解析 `pmset -g custom` 的 `disablesleep` 行，经 libc `popen` 读取）；
+- 点选某一项时，若真实状态与之不符，弹出引导对话框：给出对应的一次性命令（`sudo pmset -a disablesleep 1` / `... 0`）并自动复制到剪贴板，粘贴执行后菜单在下次打开时如实反映；
+- `disablesleep` 对电池同样生效（合盖一律不睡）；恢复使用 `sudo pmset -a disablesleep 0`（对话框中一并给出）。
 
 ### Windows：不提供
 

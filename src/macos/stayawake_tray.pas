@@ -12,10 +12,17 @@ implementation
 uses
   SysUtils,
   Classes,
+  ctypes,
   stayawake_common,
   stayawake_mover,
   CocoaAll,
   MacOSAll;
+
+// libc stdio for capturing `pmset -g custom` output (avoids a TProcess
+// dependency; libc is always linked on darwin).
+function popen(cmd: PAnsiChar; mode: PAnsiChar): Pointer; cdecl; external 'c' name 'popen';
+function pclose(stream: Pointer): cint; cdecl; external 'c' name 'pclose';
+function fgets(buf: PAnsiChar; size: cint; stream: Pointer): PAnsiChar; cdecl; external 'c' name 'fgets';
 
 // Platform renderer for the shared tray core (stayawake_common): it binds the
 // declarative menu tree to NSStatusItem/NSMenu and implements the platform
@@ -76,9 +83,101 @@ begin
   UpdateExecutionState;
 end;
 
-procedure HookApplyLidMode; cdecl;
+// ---- Lid close on AC (macOS): guided one-time admin command -----------------
+// Userspace assertions cannot veto clamshell sleep on current macOS (tested:
+// PreventSystemSleep held, lid close still slept). The only reliable software
+// lever is `sudo pmset disablesleep`, which this app cannot run itself. So
+// the menu reflects the real pmset state and picking a side shows a dialog
+// with the exact one-time command (copied to the clipboard).
+
+const
+  SEnableCmd = 'sudo pmset -a disablesleep 1';
+  SDisableCmd = 'sudo pmset -a disablesleep 0';
+
+function PopenRead(const cmd: string): string;
+const
+  ReadBufSize = 512;
+var
+  f: Pointer;
+  buf: array[0..ReadBufSize - 1] of AnsiChar;
+  ln: PAnsiChar;
 begin
-  LidGuardApply;
+  Result := '';
+  f := popen(PAnsiChar(cmd), PAnsiChar('r'));
+  if f = nil then
+    Exit;
+  try
+    repeat
+      ln := fgets(buf, ReadBufSize, f);
+      if ln <> nil then
+        Result := Result + string(ln);
+    until ln = nil;
+  finally
+    pclose(f);
+  end;
+end;
+
+function HookLidState: Boolean; cdecl;
+begin
+  // `pmset -g custom` prints a `disablesleep 1` line only when set.
+  Result := Pos('disablesleep 1', LowerCase(PopenRead('/usr/bin/pmset -g custom 2>/dev/null'))) > 0;
+end;
+
+procedure CopyToClipboard(const text: string);
+var
+  pb: NSPasteboard;
+begin
+  pb := NSPasteboard.generalPasteboard;
+  pb.clearContents;
+  pb.setString_forType(
+    NSString.stringWithUTF8String(PChar(text)),
+    NSString.stringWithUTF8String('public.utf8-plain-text'));
+end;
+
+procedure ShowLidGuideDialog(ABlock: Boolean);
+var
+  alert: NSAlert;
+  info, cmd: string;
+begin
+  if ABlock then
+  begin
+    cmd := SEnableCmd;
+    info :=
+        'macOS 不允许普通应用拦截合盖睡眠,需要一次性管理员命令(终端中执行):' + #10#10 +
+        cmd + #10#10 +
+        '设置后插电合盖将不再睡眠(电池不受影响);' + #10 +
+        '恢复命令:sudo pmset -a disablesleep 0' + #10#10 +
+        '已复制到剪贴板,粘贴到终端回车即可。菜单勾选状态反映真实设置。' + #10 +
+        'macOS 不允许普通应用拦截合盖,以上命令需要管理员权限。';
+  end
+  else
+  begin
+    cmd := SDisableCmd;
+    info :=
+        '恢复 macOS 默认合盖行为,请在终端执行一次性命令:' + #10#10 +
+        cmd + #10#10 +
+        '已复制到剪贴板,粘贴到终端回车即可。菜单勾选状态反映真实设置。';
+  end;
+  alert := NSAlert.alloc.init;
+  alert.setMessageText(NSString.stringWithUTF8String(PChar(L(SLidTitle))));
+  alert.setInformativeText(NSString.stringWithUTF8String(PChar(info)));
+  alert.addButtonWithTitle(NSString.stringWithUTF8String('复制命令 / Copy'));
+  alert.addButtonWithTitle(NSString.stringWithUTF8String('好 / OK'));
+  if alert.runModal = NSAlertFirstButtonReturn then
+    CopyToClipboard(cmd);
+  alert.release;
+end;
+
+procedure HookLidRequest(ABlock: Boolean); cdecl;
+var
+  now: Boolean;
+begin
+  now := HookLidState;
+  if ABlock = now then
+    Exit; // already in the requested state
+  ShowLidGuideDialog(ABlock);
+  if Assigned(TrayHooks.RefreshVisual) then
+    TrayHooks.RefreshVisual;
 end;
 
 procedure HookApplyLanguage; cdecl;
@@ -273,10 +372,12 @@ begin
   TrayHooks.HasLid := True;
   TrayHooks.RefreshVisual := @HookRefreshVisual;
   TrayHooks.ApplyAwake := @HookApplyAwake;
-  TrayHooks.ApplyLidMode := @HookApplyLidMode;
+  TrayHooks.ApplyLidMode := nil;
   TrayHooks.ApplyLanguage := @HookApplyLanguage;
   TrayHooks.ShowAbout := @HookShowAbout;
   TrayHooks.Quit := @HookQuit;
+  TrayHooks.LidState := @HookLidState;
+  TrayHooks.LidRequest := @HookLidRequest;
   TraySystemLang := @HookSystemLang;
 end;
 
@@ -311,9 +412,6 @@ begin
   menu.release;
 
   HookRefreshVisual;
-  // Self-heal: the mover applied the lid guard before TrayCreate; re-apply
-  // now that the menu exists, mirroring the Linux tray's startup self-heal.
-  HookApplyLidMode;
   app.run;
 end;
 

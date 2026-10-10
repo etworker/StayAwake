@@ -10,15 +10,6 @@ uses
 procedure StartMoverThread;
 procedure UpdateExecutionState;
 
-// Lid-close policy, mirroring the Linux tray semantics: while the lid-mode
-// file (owned by stayawake_common) says "block", hold a PreventSystemSleep
-// assertion. powerd only honors that assertion type while the machine is on
-// AC power, so on battery the system default applies (lid close sleeps) with
-// no explicit power probing on our side. On Apple Silicon the assertion also
-// covers lid-close sleep; on older systems it simply has no lid effect and
-// nothing breaks.
-procedure LidGuardApply;
-
 implementation
 
 uses
@@ -61,10 +52,6 @@ var
   IOPMAssertionRelease: TIOPMAssertionRelease = nil;
   gAssertionID: cuint32 = 0;
   gAssertionOn: Boolean = False;
-
-  // Lid guard: separate PreventSystemSleep assertion.
-  gLidAssertionID: cuint32 = 0;
-  gLidAssertionOn: Boolean = False;
 
 procedure InitCoreGraphics;
 begin
@@ -138,39 +125,9 @@ begin
     GetProcAddress(PMHandle, 'IOPMAssertionRelease'));
 end;
 
-// ---- Lid-close policy -------------------------------------------------------
-
-procedure LidGuardApply;
-var
-  reason, atype: CFStringRef;
-  res: cint;
-begin
-  if (IOPMAssertionCreateWithName = nil) or (IOPMAssertionRelease = nil) then
-    Exit;
-  if (LidMode = 'block') and (not gLidAssertionOn) then
-  begin
-    reason := CFStringCreateWithCString(nil,
-      PAnsiChar('StayAwake lid guard'), kCFStringEncodingUTF8);
-    atype := CFStringCreateWithCString(nil, PAnsiChar('PreventSystemSleep'),
-      kCFStringEncodingUTF8);
-    res := -1;
-    if (reason <> nil) and (atype <> nil) then
-      res := IOPMAssertionCreateWithName(atype, 255, reason, gLidAssertionID);
-    if reason <> nil then
-      CFRelease(reason);
-    if atype <> nil then
-      CFRelease(atype);
-    gLidAssertionOn := res = 0;
-  end
-  else if (LidMode <> 'block') and gLidAssertionOn then
-  begin
-    if gLidAssertionID <> 0 then
-      IOPMAssertionRelease(gLidAssertionID);
-    gLidAssertionID := 0;
-    gLidAssertionOn := False;
-  end;
-end;
-
+// Tell macOS we are actively presenting so idle sleep / display sleep is
+// suppressed while AppActive. IOPMAssertions are process-global, so the
+// tray thread can create/release them directly.
 procedure UpdateExecutionState;
 var
   reason, atype: CFStringRef;
@@ -228,7 +185,6 @@ begin
   InitCoreGraphics;
   InitPowerManagement;
   UpdateExecutionState;
-  LidGuardApply;
   with TMoverThread.Create(False) do
     FreeOnTerminate := True;
 end;

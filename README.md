@@ -22,13 +22,13 @@
 ## 功能速览
 
 - 托盘菜单：**保持清醒**开关、**开机自启**开关、**语言**（跟随系统 / English / 中文）、关于、退出——点击图标本身不会静默改变任何行为；
-- **合盖行为(接电源时)**子菜单（Linux / macOS）：插电合盖可切「不动作 / 睡眠」，电池合盖始终系统默认（Windows 不提供：系统策略修改需管理员）；
+- **合盖行为(接电源时)**子菜单：Linux 一键切换（用户级守卫，免 sudo）；macOS 为引导式管理员命令（`sudo pmset disablesleep`，一次性）；Windows 不提供（系统策略修改需管理员）；
 - 启动即激活；暂停立即生效；所有设置即时持久化；
 - 单实例；全部功能免 root / 免管理员。
 
 ## 限制速览
 
-只拦截「空闲导致」的睡眠。合盖拦截能力：Linux ✅（装守卫后）、macOS ✅（仅 Apple Silicon + 插电）、Windows ❌。完整清单见 [docs/01-requirements.md](docs/01-requirements.md)。
+只拦截「空闲导致」的睡眠。合盖拦截能力：Linux ✅（装守卫后）、macOS ⚠️（需一次性管理员命令，菜单引导）、Windows ❌。完整清单见 [docs/01-requirements.md](docs/01-requirements.md)。
 
 ## 文档
 

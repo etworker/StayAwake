@@ -54,7 +54,7 @@ Windows 检查托盘折叠区；重复启动会因单实例静默退出（先确
 Linux：确认桌面环境支持 XDG autostart；GNOME 下被「启动应用程序」禁用过的条目需在托盘菜单重新勾选一次。macOS：管理型机器首次注册可能需要在「系统设置 → 通用 → 登录项」里手动允许。
 
 **合盖还是睡眠了？**
-Windows：本工具不提供合盖拦截（系统策略需管理员）。macOS：仅 Apple Silicon + 接电源时有效，Intel 上无效；电池合盖永远维持系统默认。Linux：确认已运行 `lid-guard/install.sh` 且当前为插电状态。
+Windows：本工具不提供合盖拦截（系统策略需管理员）。macOS：普通应用无法直接拦截合盖——菜单选「不动作」会弹出引导，需要在终端执行一次管理员命令（`sudo pmset -a disablesleep 1`，已自动复制到剪贴板），执行后菜单勾选反映真实状态；恢复用 `sudo pmset -a disablesleep 0`。Linux：确认已运行 `lid-guard/install.sh` 且当前为插电状态。
 
 **怎么彻底退出？**
 托盘菜单 → 退出。Linux/macOS 下锁文件由内核自动释放，不会留下僵尸锁。
