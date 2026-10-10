@@ -118,9 +118,25 @@ begin
 end;
 
 function HookLidState: Boolean; cdecl;
+var
+  outp, line, value: string;
+  i, start: Integer;
 begin
-  // `pmset -g custom` prints a `disablesleep 1` line only when set.
-  Result := Pos('disablesleep 1', LowerCase(PopenRead('/usr/bin/pmset -g custom 2>/dev/null'))) > 0;
+  // The flag shows up in `pmset -g` as a tab-separated "SleepDisabled 1"
+  // line. It does NOT appear in `pmset -g custom` on current macOS (verified
+  // on a machine with the setting active), which the first version parsed.
+  Result := False;
+  outp := LowerCase(PopenRead('/usr/bin/pmset -g 2>/dev/null'));
+  i := Pos('sleepdisabled', outp);
+  if i = 0 then
+    Exit;
+  start := i + Length('sleepdisabled');
+  line := Copy(outp, start, Length(outp));
+  i := Pos(#10, line);
+  if i > 0 then
+    line := Copy(line, 1, i - 1);
+  value := Trim(line);
+  Result := (value <> '') and (value[1] = '1');
 end;
 
 procedure CopyToClipboard(const text: string);
