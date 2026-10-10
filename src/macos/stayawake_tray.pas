@@ -445,7 +445,13 @@ begin
   if TrayConfigDir <> '' then
     TrayConfigDir := TrayConfigDir + '/Library/Application Support';
 
-  TrayHooks.HasLid := True;
+  // `pmset disablesleep` (the only lid-close lever) is honored on Apple
+  // Silicon; Intel Macs enforce clamshell sleep at the SMC layer, where the
+  // admin command changes nothing. Hide the submenu on x86_64 instead of
+  // prompting for a password that cannot work.
+  TrayHooks.HasLid := Pos('arm64',
+    LowerCase(PopenRead('/usr/bin/uname -m 2>/dev/null'))) > 0;
+
   TrayHooks.RefreshVisual := @HookRefreshVisual;
   TrayHooks.ApplyAwake := @HookApplyAwake;
   TrayHooks.ApplyLidMode := nil;
