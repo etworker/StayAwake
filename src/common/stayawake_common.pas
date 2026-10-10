@@ -387,6 +387,7 @@ begin
   Result := NewNode(mkSubmenu, maNone, SEmpty, 0);   // invisible root
 
   AddChild(Result, NewNode(mkCheck, maToggleAwake, SAwake, 0));
+  AddChild(Result, NewNode(mkSep, maNone, SEmpty, 0));
 
   if HasLid then
   begin
@@ -397,6 +398,7 @@ begin
   end;
 
   AddChild(Result, NewNode(mkCheck, maAutostart, SAutoStart, 0));
+  AddChild(Result, NewNode(mkSep, maNone, SEmpty, 0));
 
   lang := NewNode(mkSubmenu, maNone, SLangTitle, 0);
   AddChild(lang, NewNode(mkRadio, maLangAuto, SLangAuto, RG_LANG));
