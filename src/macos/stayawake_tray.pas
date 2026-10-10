@@ -260,16 +260,12 @@ end;
 
 // ---- Entry point ------------------------------------------------------------
 
-procedure TrayCreate;
-var
-  app: NSApplication;
-  menu: NSMenu;
-  img: NSImage;
+// Platform config/hooks must be ready BEFORE the main body starts:
+// stayawake.lpr runs StartMoverThread (which applies the lid guard) prior
+// to TrayCreate, so this is wired via the unit's initialization section
+// (at the bottom) rather than from TrayCreate.
+procedure InitPlatformConfig;
 begin
-  app := NSApplication.sharedApplication;
-  app.setActivationPolicy(NSApplicationActivationPolicyAccessory);
-  app.finishLaunching;
-
   TrayConfigDir := GetEnvironmentVariable('HOME');
   if TrayConfigDir <> '' then
     TrayConfigDir := TrayConfigDir + '/Library/Application Support';
@@ -282,6 +278,17 @@ begin
   TrayHooks.ShowAbout := @HookShowAbout;
   TrayHooks.Quit := @HookQuit;
   TraySystemLang := @HookSystemLang;
+end;
+
+procedure TrayCreate;
+var
+  app: NSApplication;
+  menu: NSMenu;
+  img: NSImage;
+begin
+  app := NSApplication.sharedApplication;
+  app.setActivationPolicy(NSApplicationActivationPolicyAccessory);
+  app.finishLaunching;
 
   AppDelegate := TStayAwakeApp.alloc.init;
 
@@ -304,8 +311,14 @@ begin
   menu.release;
 
   HookRefreshVisual;
+  // Self-heal: the mover applied the lid guard before TrayCreate; re-apply
+  // now that the menu exists, mirroring the Linux tray's startup self-heal.
+  HookApplyLidMode;
   app.run;
 end;
+
+initialization
+  InitPlatformConfig;
 
 finalization
   FreeTrayMenu(MenuRoot);

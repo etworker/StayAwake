@@ -37,6 +37,10 @@ L3 的价值：Windows 代码在本机无 Windows 的情况下也能完成**编�
 - 合盖动作的物理验证（合上盖子看是否睡眠）；
 - Wayland 下的 Linux 托盘可见性（依赖 AppIndicator 扩展）。
 
+## 回归案例
+
+- **配置目录初始化时序**（2026-10）：平台配置目录与钩子原先在 `TrayCreate` 中注册，而 `stayawake.lpr` 在其之前运行 `StartMoverThread`——macOS 合盖守卫启动时读到空配置目录，把 `block` 当成 `allow`，断言未持有（用户实测「插电合盖仍睡眠」暴露）。修复：三平台托盘单元统一把 `InitPlatformConfig` 挂到单元 `initialization` 节（先于主程序体），并在 `TrayCreate` 末尾自愈式重放 `ApplyLidMode`。教训：**共享核心对路径的读取时机不可假设**，平台注册必须先于任何主程序体调用。
+
 ## 回归基线
 
 每次影响共享核心（`stayawake_common`）或任一渲染器的改动，最低回归标准：

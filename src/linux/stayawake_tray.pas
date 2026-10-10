@@ -311,12 +311,10 @@ end;
 
 // ---- Entry point ------------------------------------------------------------
 
-procedure TrayCreate;
-var
-  pb: PGdkPixbuf;
+// Platform config/hooks must be ready BEFORE the main body starts (the
+// shared core reads config paths at any time); wired via initialization.
+procedure InitPlatformConfig;
 begin
-  gtk_init(nil, nil);
-
   TrayConfigDir := GetEnvironmentVariable('XDG_CONFIG_HOME');
   if TrayConfigDir = '' then
   begin
@@ -333,6 +331,13 @@ begin
   TrayHooks.ShowAbout := @HookShowAbout;
   TrayHooks.Quit := @HookQuit;
   TraySystemLang := @HookSystemLang;
+end;
+
+procedure TrayCreate;
+var
+  pb: PGdkPixbuf;
+begin
+  gtk_init(nil, nil);
 
   pb := MakePixbuf;
   if pb = nil then
@@ -358,6 +363,9 @@ begin
     HookApplyLidMode;
   gtk_main;
 end;
+
+initialization
+  InitPlatformConfig;
 
 finalization
   FreeTrayMenu(MenuRoot);

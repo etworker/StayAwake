@@ -278,13 +278,10 @@ end;
 
 // ---- Entry point ------------------------------------------------------------
 
-procedure TrayCreate;
+// Platform config/hooks must be ready BEFORE the main body starts (the
+// shared core reads config paths at any time); wired via initialization.
+procedure InitPlatformConfig;
 var
-  wc: TWndClass;
-  nid: NOTIFYICONDATAW;
-  pixels: TIconPixels;
-  msg: TMsg;
-  tip: WideString;
   Buf: array[0..1023] of Char;
 begin
   // %APPDATA% is always set for interactive sessions; '.' keeps config
@@ -302,7 +299,16 @@ begin
   TrayHooks.ShowAbout := @HookShowAbout;
   TrayHooks.Quit := @HookQuit;
   TraySystemLang := @HookSystemLang;
+end;
 
+procedure TrayCreate;
+var
+  wc: TWndClass;
+  nid: NOTIFYICONDATAW;
+  pixels: TIconPixels;
+  msg: TMsg;
+  tip: WideString;
+begin
   FillChar(wc, SizeOf(wc), 0);
   wc.lpfnWndProc := @TrayWndProc;
   wc.hInstance := GetModuleHandle(nil);
@@ -351,5 +357,8 @@ begin
     DispatchMessage(msg);
   end;
 end;
+
+initialization
+  InitPlatformConfig;
 
 end.
