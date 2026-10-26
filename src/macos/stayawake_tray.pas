@@ -83,17 +83,6 @@ begin
   UpdateExecutionState;
 end;
 
-// ---- Lid close on AC (macOS): guided one-time admin command -----------------
-// Userspace assertions cannot veto clamshell sleep on current macOS (tested:
-// PreventSystemSleep held, lid close still slept). The only reliable software
-// lever is `sudo pmset disablesleep`, which this app cannot run itself. So
-// the menu reflects the real pmset state and picking a side shows a dialog
-// with the exact one-time command (copied to the clipboard).
-
-const
-  SEnableCmd = 'sudo pmset -a disablesleep 1';
-  SDisableCmd = 'sudo pmset -a disablesleep 0';
-
 function PopenRead(const cmd: string): string;
 const
   ReadBufSize = 512;
@@ -117,28 +106,6 @@ begin
   end;
 end;
 
-function HookLidState: Boolean; cdecl;
-var
-  outp, line, value: string;
-  i, start: Integer;
-begin
-  // The flag shows up in `pmset -g` as a tab-separated "SleepDisabled 1"
-  // line. It does NOT appear in `pmset -g custom` on current macOS (verified
-  // on a machine with the setting active), which the first version parsed.
-  Result := False;
-  outp := LowerCase(PopenRead('/usr/bin/pmset -g 2>/dev/null'));
-  i := Pos('sleepdisabled', outp);
-  if i = 0 then
-    Exit;
-  start := i + Length('sleepdisabled');
-  line := Copy(outp, start, Length(outp));
-  i := Pos(#10, line);
-  if i > 0 then
-    line := Copy(line, 1, i - 1);
-  value := Trim(line);
-  Result := (value <> '') and (value[1] = '1');
-end;
-
 procedure CopyToClipboard(const text: string);
 var
   pb: NSPasteboard;
@@ -150,110 +117,181 @@ begin
     NSString.stringWithUTF8String('public.utf8-plain-text'));
 end;
 
-procedure ShowLidGuideDialog(ABlock: Boolean);
+// ---- Lid close (macOS): cooperative sleep negotiation ----------------------
+// Userspace assertions cannot veto clamshell sleep, and `pmset disablesleep`
+// would also kill the Apple-menu Sleep item (user requirement: manual sleep
+// must keep working). The documented mechanism left is the power-management
+// sleep negotiation: powerd broadcasts kIOPMMessageSystemWillSleep with a
+// 30 s window and the app answers IOAllowPowerChange / IOCancelPowerChange.
+//
+// Policy: veto ONLY while the lid submenu is set to "block" AND the built-in
+// display has gone offline (the observable lid-close signal on Apple
+// Silicon - there is no public lid-state property in the IORegistry).
+// Anything else (menu Sleep, power button, idle) is allowed immediately and
+// the keep-awake assertion is dropped for the duration, re-armed on wake.
+
+const
+  kIOPMMessageSystemWillSleep    = $E0000200;
+  kIOPMMessageCanSystemSleep     = $E0000201;
+  kIOPMMessageSystemHasPoweredOn = $E0000203;
+
+type
+  TIORegisterForSystemPower = function(refcon: Pointer; var port: Pointer;
+    handler: Pointer; var notifier: Pointer): Pointer; cdecl;
+  TIONotificationPortGetRunLoopSource = function(port: Pointer): CFRunLoopSourceRef; cdecl;
+  TIOAllowPowerChange = function(connect: Pointer; token: culong): cint; cdecl;
+  TIOCancelPowerChange = function(connect: Pointer; token: culong): cint; cdecl;
+  TCGGetOnlineDisplayList = function(maxDisplays: cuint32; displays: PCUInt;
+    var onlineCount: cuint32): cint; cdecl;
+  TCGDisplayIsBuiltin = function(display: cuint32): Boolean; cdecl;
+
+var
+  PMIONotificationPort: Pointer = nil;
+  PowerConnect: Pointer = nil;
+  IOReg: TLibHandle = NilHandle;
+  CGDisp: TLibHandle = NilHandle;
+  IORegisterForSystemPower: TIORegisterForSystemPower = nil;
+  IONotificationPortGetRunLoopSource: TIONotificationPortGetRunLoopSource = nil;
+  IOAllowPowerChange: TIOAllowPowerChange = nil;
+  IOCancelPowerChange: TIOCancelPowerChange = nil;
+  CGGetOnlineDisplayList: TCGGetOnlineDisplayList = nil;
+  CGDisplayIsBuiltin: TCGDisplayIsBuiltin = nil;
+
+procedure InitPowerNegotiation;
+begin
+  if IOReg <> NilHandle then
+    Exit;
+  IOReg := LoadLibrary('/System/Library/Frameworks/IOKit.framework/IOKit');
+  if IOReg <> NilHandle then
+  begin
+    Pointer(IORegisterForSystemPower) := GetProcAddress(IOReg, 'IORegisterForSystemPower');
+    Pointer(IONotificationPortGetRunLoopSource) := GetProcAddress(IOReg, 'IONotificationPortGetRunLoopSource');
+    Pointer(IOAllowPowerChange) := GetProcAddress(IOReg, 'IOAllowPowerChange');
+    Pointer(IOCancelPowerChange) := GetProcAddress(IOReg, 'IOCancelPowerChange');
+  end;
+  CGDisp := LoadLibrary('/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics');
+  if CGDisp <> NilHandle then
+  begin
+    Pointer(CGGetOnlineDisplayList) := GetProcAddress(CGDisp, 'CGGetOnlineDisplayList');
+    Pointer(CGDisplayIsBuiltin) := GetProcAddress(CGDisp, 'CGDisplayIsBuiltin');
+  end;
+end;
+
+// True when the built-in panel is offline while other displays exist - the
+// observable lid-close signal. Any uncertainty fails open (allow sleep).
+function BuiltinDisplayGone: Boolean;
+var
+  ids: array[0..15] of cuint32;
+  n, i: cuint32;
+  builtin: Boolean;
+begin
+  Result := False;
+  if (CGGetOnlineDisplayList = nil) or (CGDisplayIsBuiltin = nil) then
+    Exit;
+  n := 0;
+  if CGGetOnlineDisplayList(Length(ids), @ids[0], n) <> 0 then
+    Exit;
+  builtin := False;
+  for i := 0 to n - 1 do
+    if CGDisplayIsBuiltin(ids[i]) then
+    begin
+      builtin := True;
+      Break;
+    end;
+  Result := (n > 0) and (not builtin);
+end;
+
+// Veto = lid-block mode on AND built-in panel offline. Everything else
+// cooperates with the system-initiated sleep.
+function LidVetoActive: Boolean;
+begin
+  Result := (LidMode = 'block') and BuiltinDisplayGone;
+end;
+
+procedure PowerEventHandler(refcon: Pointer; service: Pointer;
+  msgType: cuint32; arg: Pointer); cdecl;
+var
+  token: culong;
+begin
+  token := culong(PtrUInt(arg));
+  if (PowerConnect = nil) or (IOAllowPowerChange = nil) then
+    Exit;
+  case msgType of
+    kIOPMMessageCanSystemSleep:
+      // Idle sleep: policy is already expressed via the keep-awake assertion.
+      IOAllowPowerChange(PowerConnect, token);
+    kIOPMMessageSystemWillSleep:
+      if LidVetoActive then
+      begin
+        if IOCancelPowerChange <> nil then
+          IOCancelPowerChange(PowerConnect, token)
+        else
+          IOAllowPowerChange(PowerConnect, token);
+      end
+      else
+      begin
+        OnSystemSleep;   // cooperate: drop the assertion while we sleep
+        IOAllowPowerChange(PowerConnect, token);
+      end;
+    kIOPMMessageSystemHasPoweredOn:
+      OnSystemWake;      // re-arm the assertion if still active
+  end;
+end;
+
+procedure RegisterPowerNotifications;
+var
+  notifier: Pointer = nil;
+  src: CFRunLoopSourceRef;
+begin
+  if (IORegisterForSystemPower = nil) or (IONotificationPortGetRunLoopSource = nil) then
+    Exit;
+  PowerConnect := IORegisterForSystemPower(nil, PMIONotificationPort,
+    @PowerEventHandler, notifier);
+  if PowerConnect = nil then
+    Exit;
+  src := IONotificationPortGetRunLoopSource(PMIONotificationPort);
+  if src <> nil then
+    CFRunLoopAddSource(CFRunLoopGetMain(), src, kCFRunLoopDefaultMode);
+end;
+
+// Legacy migration: machines that still carry `pmset disablesleep 1` (the
+// previous guided-admin approach) have a dead Sleep menu item even without
+// this app; detect it once per launch and offer the restore command.
+function PmsetSleepDisabled: Boolean;
+var
+  outp, line: string;
+  i, start: Integer;
+begin
+  Result := False;
+  outp := LowerCase(PopenRead('/usr/bin/pmset -g 2>/dev/null'));
+  i := Pos('sleepdisabled', outp);
+  if i = 0 then
+    Exit;
+  start := i + Length('sleepdisabled');
+  line := Copy(outp, start, Length(outp));
+  i := Pos(#10, line);
+  if i > 0 then
+    line := Copy(line, 1, i - 1);
+  line := Trim(line);
+  Result := (line <> '') and (line[1] = '1');
+end;
+
+procedure ShowLegacyMigrationDialog;
 var
   alert: NSAlert;
-  info, cmd: string;
 begin
-  if ABlock then
-  begin
-    cmd := SEnableCmd;
-    info :=
-        'macOS 不允许普通应用拦截合盖睡眠,需要一次性管理员命令(终端中执行):' + #10#10 +
-        cmd + #10#10 +
-        '设置后插电合盖将不再睡眠;' + #10 +
-        '恢复命令:sudo pmset -a disablesleep 0' + #10#10 +
-        '点「复制命令」后在终端粘贴执行即可(此为备选路径,正常情况会直接弹出系统密码框)。';
-  end
-  else
-  begin
-    cmd := SDisableCmd;
-    info :=
-        '恢复 macOS 默认合盖行为,请执行一次性命令:' + #10#10 +
-        cmd + #10#10 +
-        '点「复制命令」后在终端粘贴执行即可(此为备选路径,正常情况会直接弹出系统密码框)。';
-  end;
   alert := NSAlert.alloc.init;
   alert.setMessageText(NSString.stringWithUTF8String(PChar(L(SLidTitle))));
-  alert.setInformativeText(NSString.stringWithUTF8String(PChar(info)));
+  alert.setInformativeText(NSString.stringWithUTF8String(PChar(
+      '检测到系统仍带有旧的 SleepDisabled 设置,它会让菜单「睡眠」失效。' + #10#10 +
+      '请执行以下命令恢复,本应用已改用无需管理员的协商机制:' + #10#10 +
+      'sudo pmset -a disablesleep 0' + #10#10 +
+      '命令已复制到剪贴板。')));
   alert.addButtonWithTitle(NSString.stringWithUTF8String('复制命令 / Copy'));
   alert.addButtonWithTitle(NSString.stringWithUTF8String('好 / OK'));
   if alert.runModal = NSAlertFirstButtonReturn then
-    CopyToClipboard(cmd);
+    CopyToClipboard('sudo pmset -a disablesleep 0');
   alert.release;
-end;
-
-// Run `pmset -a disablesleep <0|1>` as root through the standard macOS
-// authorization dialog (AuthorizationExecuteWithPrivileges): the user types
-// their account password once, the command runs, no terminal involved.
-// Returns True when pmset reported success; False on cancel/failure.
-function RunRootDisableSleep(ABlock: Boolean): Boolean;
-const
-  kAuthorizationFlagDefaults = 0;
-  kAuthorizationFlagDestroyRights = 8;
-  errAuthorizationCanceled = -60005;
-type
-  TAuthorizationCreate = function(rights: Pointer; environment: Pointer;
-    flags: cuint32; var auth: Pointer): cint; cdecl;
-  TAuthorizationExecuteWithPrivileges = function(auth: Pointer; path: PAnsiChar;
-    flags: cuint32; args: PAnsiChar; pipe: Pointer): cint; cdecl;
-  TAuthorizationFree = function(auth: Pointer; flags: cuint32): cint; cdecl;
-var
-  SecHandle: TLibHandle;
-  aCreate: TAuthorizationCreate;
-  aExec: TAuthorizationExecuteWithPrivileges;
-  aFree: TAuthorizationFree;
-  auth: Pointer = nil;
-  args: array[0..3] of PAnsiChar;
-  status: cint;
-begin
-  Result := False;
-  SecHandle := LoadLibrary('/System/Library/Frameworks/Security.framework/Security');
-  if SecHandle = NilHandle then
-    Exit;
-  Pointer(aCreate) := GetProcAddress(SecHandle, 'AuthorizationCreate');
-  Pointer(aExec) := GetProcAddress(SecHandle, 'AuthorizationExecuteWithPrivileges');
-  Pointer(aFree) := GetProcAddress(SecHandle, 'AuthorizationFree');
-  if (aCreate = nil) or (aExec = nil) or (aFree = nil) then
-    Exit;
-
-  if ABlock then
-    args[2] := '1'
-  else
-    args[2] := '0';
-  args[0] := '-a';
-  args[1] := 'disablesleep';
-  args[3] := nil;
-
-  if aCreate(nil, nil, kAuthorizationFlagDefaults, auth) = 0 then
-  begin
-    // Shows the standard administrator-password dialog when needed.
-    status := aExec(auth, '/usr/bin/pmset', kAuthorizationFlagDefaults,
-      PAnsiChar(@args[0]), nil);
-    if status = 0 then
-      Result := True
-    else if status = errAuthorizationCanceled then
-      Exit            // user dismissed the password dialog: do nothing
-    else
-      Result := False;
-    aFree(auth, kAuthorizationFlagDestroyRights);
-  end;
-end;
-
-procedure HookLidRequest(ABlock: Boolean); cdecl;
-var
-  now: Boolean;
-begin
-  now := HookLidState;
-  if ABlock = now then
-    Exit; // already in the requested state
-  // Caffeine-style flow: native password dialog runs the command directly.
-  // The copy-to-clipboard guide stays as fallback for systems where the
-  // authorization API is unavailable.
-  if not RunRootDisableSleep(ABlock) then
-    ShowLidGuideDialog(ABlock);
-  if Assigned(TrayHooks.RefreshVisual) then
-    TrayHooks.RefreshVisual;
 end;
 
 procedure HookApplyLanguage; cdecl;
@@ -458,8 +496,8 @@ begin
   TrayHooks.ApplyLanguage := @HookApplyLanguage;
   TrayHooks.ShowAbout := @HookShowAbout;
   TrayHooks.Quit := @HookQuit;
-  TrayHooks.LidState := @HookLidState;
-  TrayHooks.LidRequest := @HookLidRequest;
+  TrayHooks.LidState := nil;
+  TrayHooks.LidRequest := nil;
   TraySystemLang := @HookSystemLang;
 end;
 
@@ -493,6 +531,10 @@ begin
   StatusItem.setMenu(menu);
   menu.release;
 
+  InitPowerNegotiation;
+  RegisterPowerNotifications;
+  if PmsetSleepDisabled then
+    ShowLegacyMigrationDialog;
   HookRefreshVisual;
   app.run;
 end;

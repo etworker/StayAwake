@@ -9,6 +9,8 @@ uses
 
 procedure StartMoverThread;
 procedure UpdateExecutionState;
+procedure OnSystemSleep;
+procedure OnSystemWake;
 
 implementation
 
@@ -52,6 +54,7 @@ var
   IOPMAssertionRelease: TIOPMAssertionRelease = nil;
   gAssertionID: cuint32 = 0;
   gAssertionOn: Boolean = False;
+  gSleepCoop: Boolean = False;   // released for an allowed system sleep; re-arm on wake
 
 procedure InitCoreGraphics;
 begin
@@ -161,6 +164,29 @@ begin
       IOPMAssertionRelease(gAssertionID);
     gAssertionID := 0;
     gAssertionOn := False;
+  end;
+end;
+
+// Cooperation with explicit system sleep (Apple menu / power button): the
+// system does not need our permission, but dropping the display assertion
+// keeps powerd's view clean; re-created on wake while still active.
+procedure OnSystemSleep;
+begin
+  if gAssertionOn and (IOPMAssertionRelease <> nil) and (gAssertionID <> 0) then
+  begin
+    IOPMAssertionRelease(gAssertionID);
+    gAssertionID := 0;
+    gAssertionOn := False;
+    gSleepCoop := True;
+  end;
+end;
+
+procedure OnSystemWake;
+begin
+  if gSleepCoop then
+  begin
+    gSleepCoop := False;
+    UpdateExecutionState;
   end;
 end;
 
