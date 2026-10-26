@@ -48,6 +48,7 @@ var
 
 function MakeTrayNSImage: NSImage; forward;
 function MakeEyeNSImage(Px, Pt: Integer; Template: Boolean): NSImage; forward;
+procedure PowerLog(const s: string); forward;
 
 // ---- Platform hooks ---------------------------------------------------------
 
@@ -154,11 +155,18 @@ type
   TCGDisplayIsBuiltin = function(display: cuint32): Boolean; cdecl;
   TCGDisplayRegisterReconfigurationCallback = function(cb: Pointer;
     userInfo: Pointer): cint; cdecl;
+  TIOServiceGetMatchingService = function(mainPort: Pointer;
+    matching: CFMutableDictionaryRef): Pointer; cdecl;
+  TIOServiceMatching = function(name: PAnsiChar): CFMutableDictionaryRef; cdecl;
+  TIORegistryEntryCreateCFProperty = function(entry: Pointer; key: CFStringRef;
+    allocator: CFAllocatorRef; options: cuint32): CFTypeRef; cdecl;
+  TIOObjectRelease = function(obj: Pointer): cint; cdecl;
 
 var
   PMIONotificationPort: Pointer = nil;
   PowerConnect: Pointer = nil;
   IOReg: TLibHandle = NilHandle;
+  IOReg2: TLibHandle = NilHandle;
   CGDisp: TLibHandle = NilHandle;
   IORegisterForSystemPower: TIORegisterForSystemPower = nil;
   IONotificationPortGetRunLoopSource: TIONotificationPortGetRunLoopSource = nil;
@@ -167,10 +175,10 @@ var
   CGGetOnlineDisplayList: TCGGetOnlineDisplayList = nil;
   CGDisplayIsBuiltin: TCGDisplayIsBuiltin = nil;
   CGDisplayRegisterReconfigurationCallback: TCGDisplayRegisterReconfigurationCallback = nil;
-  // Cached built-in-panel state, maintained by the display-reconfiguration
-  // callback. WillSleep can fire before the panel shows up as offline in a
-  // point-in-time display query (observed), so the veto reads this cache.
-  gBuiltinOnline: Boolean = True;
+  IOServiceGetMatchingService: TIOServiceGetMatchingService = nil;
+  IOServiceMatching: TIOServiceMatching = nil;
+  IORegistryEntryCreateCFProperty: TIORegistryEntryCreateCFProperty = nil;
+  IOObjectRelease: TIOObjectRelease = nil;
 
 procedure InitPowerNegotiation;
 begin
@@ -192,56 +200,50 @@ begin
     Pointer(CGDisplayRegisterReconfigurationCallback) := GetProcAddress(CGDisp,
       'CGDisplayRegisterReconfigurationCallback');
   end;
+  IOReg2 := LoadLibrary('/System/Library/Frameworks/IOKit.framework/IOKit');
+  if IOReg2 <> NilHandle then
+  begin
+    Pointer(IOServiceGetMatchingService) := GetProcAddress(IOReg2, 'IOServiceGetMatchingService');
+    Pointer(IOServiceMatching) := GetProcAddress(IOReg2, 'IOServiceMatching');
+    Pointer(IORegistryEntryCreateCFProperty) := GetProcAddress(IOReg2, 'IORegistryEntryCreateCFProperty');
+    Pointer(IOObjectRelease) := GetProcAddress(IOReg2, 'IOObjectRelease');
+  end;
 end;
 
-// True when the built-in panel is offline while other displays exist - the
-// observable lid-close signal. Any uncertainty fails open (allow sleep).
-function BuiltinDisplayGone: Boolean;
+function AppleClamshellClosed: Boolean;
 var
-  ids: array[0..15] of cuint32;
-  n, i: cuint32;
-  builtin: Boolean;
+  svc, prop: Pointer;
+  key: CFStringRef;
 begin
   Result := False;
-  if (CGGetOnlineDisplayList = nil) or (CGDisplayIsBuiltin = nil) then
+  if (IOServiceGetMatchingService = nil) or (IOServiceMatching = nil) or
+     (IORegistryEntryCreateCFProperty = nil) or (IOObjectRelease = nil) then
     Exit;
-  n := 0;
-  if CGGetOnlineDisplayList(Length(ids), @ids[0], n) <> 0 then
+  svc := IOServiceGetMatchingService(nil, IOServiceMatching('IOPMrootDomain'));
+  if svc = nil then
     Exit;
-  builtin := False;
-  for i := 0 to n - 1 do
-    if CGDisplayIsBuiltin(ids[i]) then
-    begin
-      builtin := True;
-      Break;
-    end;
-  Result := (n > 0) and (not builtin);
+  key := CFStringCreateWithCString(nil, PAnsiChar('AppleClamshellState'),
+    kCFStringEncodingUTF8);
+  prop := IORegistryEntryCreateCFProperty(svc, key, nil, 0);
+  if prop <> nil then
+  begin
+    Result := (prop = CFTypeRef(kCFBooleanTrue));
+    CFRelease(prop);
+  end;
+  CFRelease(key);
+  IOObjectRelease(svc);
 end;
 
-const
-  kCGDisplayAddFlag      = 1 shl 4;
-  kCGDisplayRemoveFlag   = 1 shl 5;
-  kCGDisplayEnabledFlag  = 1 shl 6;
-  kCGDisplayDisabledFlag = 1 shl 7;
-
-// Keep the cached panel state current: the clamshell sleep request can race
-// ahead of a point-in-time display query, but this reconfiguration callback
-// runs as the panel goes offline, so the veto reads up-to-date state.
-procedure DisplayReconfig(display: cuint32; flags: cuint32; userInfo: Pointer); cdecl;
-begin
-  if (CGDisplayIsBuiltin = nil) or (not CGDisplayIsBuiltin(display)) then
-    Exit;
-  if (flags and (kCGDisplayRemoveFlag or kCGDisplayDisabledFlag)) <> 0 then
-    gBuiltinOnline := False
-  else if (flags and (kCGDisplayAddFlag or kCGDisplayEnabledFlag)) <> 0 then
-    gBuiltinOnline := True;
-end;
-
-// Veto = lid-block mode on AND built-in panel believed offline (cached state
-// or a fresh query). Everything else cooperates with the initiated sleep.
 function LidVetoActive: Boolean;
+var
+  Mode: string;
+  Clamshell: Boolean;
 begin
-  Result := (LidMode = 'block') and ((not gBuiltinOnline) or BuiltinDisplayGone);
+  Mode := LidMode;
+  Clamshell := AppleClamshellClosed;
+  Result := (Mode = 'block') and Clamshell;
+  PowerLog(Format('LidVetoActive: mode=%s clamshell=%s -> veto=%s',
+    [Mode, BoolToStr(Clamshell, True), BoolToStr(Result, True)]));
 end;
 
 procedure PowerLog(const s: string);
@@ -324,8 +326,6 @@ var
 begin
   if (IORegisterForSystemPower = nil) or (IONotificationPortGetRunLoopSource = nil) then
     Exit;
-  if CGDisplayRegisterReconfigurationCallback <> nil then
-    CGDisplayRegisterReconfigurationCallback(@DisplayReconfig, nil);
   PowerConnect := IORegisterForSystemPower(nil, PMIONotificationPort,
     @PowerEventHandler, notifier);
   PowerLog(Format('registered connect=%s port=%s', [
