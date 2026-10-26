@@ -63,7 +63,7 @@
 - **手动睡眠始终可用**：菜单「睡眠」/电源键发生时内建屏在线 → 立即放行，并**主动释放防睡断言**配合休眠（`kIOPMMessageSystemHasPoweredOn` 唤醒后若仍处于激活状态则自动重建）；
 - 模式回到与 Linux 相同的 `lid-mode` 文件（`block`/`allow`），菜单勾选即真实状态；`kIOPMMessageCanSystemSleep`（空闲睡眠询问）恒放行——空闲策略完全由防睡断言表达；
 - 启动时若检测到历史遗留的 `SleepDisabled 1`（旧引导式方案的产物，会让菜单「睡眠」失效），弹一次性对话框引导执行 `sudo pmset -a disablesleep 0` 恢复；
-- 已知边界：拦截依赖"内建屏离线先于睡眠请求"的时序；电池下同样拦截（无电源探测），长时间合盖注意电量；Intel 构建直接隐藏合盖菜单（SMC 层强制，协商也拦不住）。
+- 合盖判定：CGDisplayIsBuiltin 的**即时查询在 WillSleep 时刻可能尚未反映离线**（实测时序竞争），因此以 `CGDisplayRegisterReconfigurationCallback` 维护缓存（面板移除/禁用 → 离线），拦截判定读「缓存或即时查询」，任一指示离线即拦截；不确定仍放行（fail-open）。电池下同样拦截（无电源探测），长时间合盖注意电量；Intel 构建直接隐藏合盖菜单（SMC 层强制，协商也拦不住）。
 
 ### Windows：不提供
 
