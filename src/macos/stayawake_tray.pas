@@ -152,6 +152,8 @@ type
   TCGGetOnlineDisplayList = function(maxDisplays: cuint32; displays: PCUInt;
     var onlineCount: cuint32): cint; cdecl;
   TCGDisplayIsBuiltin = function(display: cuint32): Boolean; cdecl;
+  TCGDisplayRegisterReconfigurationCallback = function(cb: Pointer;
+    userInfo: Pointer): cint; cdecl;
 
 var
   PMIONotificationPort: Pointer = nil;
@@ -164,6 +166,11 @@ var
   IOCancelPowerChange: TIOCancelPowerChange = nil;
   CGGetOnlineDisplayList: TCGGetOnlineDisplayList = nil;
   CGDisplayIsBuiltin: TCGDisplayIsBuiltin = nil;
+  CGDisplayRegisterReconfigurationCallback: TCGDisplayRegisterReconfigurationCallback = nil;
+  // Cached built-in-panel state, maintained by the display-reconfiguration
+  // callback. WillSleep can fire before the panel shows up as offline in a
+  // point-in-time display query (observed), so the veto reads this cache.
+  gBuiltinOnline: Boolean = True;
 
 procedure InitPowerNegotiation;
 begin
@@ -182,6 +189,8 @@ begin
   begin
     Pointer(CGGetOnlineDisplayList) := GetProcAddress(CGDisp, 'CGGetOnlineDisplayList');
     Pointer(CGDisplayIsBuiltin) := GetProcAddress(CGDisp, 'CGDisplayIsBuiltin');
+    Pointer(CGDisplayRegisterReconfigurationCallback) := GetProcAddress(CGDisp,
+      'CGDisplayRegisterReconfigurationCallback');
   end;
 end;
 
@@ -209,11 +218,30 @@ begin
   Result := (n > 0) and (not builtin);
 end;
 
-// Veto = lid-block mode on AND built-in panel offline. Everything else
-// cooperates with the system-initiated sleep.
+const
+  kCGDisplayAddFlag      = 1 shl 4;
+  kCGDisplayRemoveFlag   = 1 shl 5;
+  kCGDisplayEnabledFlag  = 1 shl 6;
+  kCGDisplayDisabledFlag = 1 shl 7;
+
+// Keep the cached panel state current: the clamshell sleep request can race
+// ahead of a point-in-time display query, but this reconfiguration callback
+// runs as the panel goes offline, so the veto reads up-to-date state.
+procedure DisplayReconfig(display: cuint32; flags: cuint32; userInfo: Pointer); cdecl;
+begin
+  if (CGDisplayIsBuiltin = nil) or (not CGDisplayIsBuiltin(display)) then
+    Exit;
+  if (flags and (kCGDisplayRemoveFlag or kCGDisplayDisabledFlag)) <> 0 then
+    gBuiltinOnline := False
+  else if (flags and (kCGDisplayAddFlag or kCGDisplayEnabledFlag)) <> 0 then
+    gBuiltinOnline := True;
+end;
+
+// Veto = lid-block mode on AND built-in panel believed offline (cached state
+// or a fresh query). Everything else cooperates with the initiated sleep.
 function LidVetoActive: Boolean;
 begin
-  Result := (LidMode = 'block') and BuiltinDisplayGone;
+  Result := (LidMode = 'block') and ((not gBuiltinOnline) or BuiltinDisplayGone);
 end;
 
 procedure PowerLog(const s: string);
@@ -296,6 +324,8 @@ var
 begin
   if (IORegisterForSystemPower = nil) or (IONotificationPortGetRunLoopSource = nil) then
     Exit;
+  if CGDisplayRegisterReconfigurationCallback <> nil then
+    CGDisplayRegisterReconfigurationCallback(@DisplayReconfig, nil);
   PowerConnect := IORegisterForSystemPower(nil, PMIONotificationPort,
     @PowerEventHandler, notifier);
   PowerLog(Format('registered connect=%s port=%s', [
