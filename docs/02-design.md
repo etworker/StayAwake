@@ -56,14 +56,15 @@
 - 守卫进程在**插电**时持有 logind inhibitor 锁拦截合盖睡眠；电源状态直接读内核 `/sys`，因此免疫 GNOME/UPower 的电源误判（实测修复过 XPS 13 + Ubuntu 22.04 上「插着电却被按电池策略合盖睡眠」的案例）；
 - 切到「不动作」时托盘调用 `systemctl --user enable --now` 自愈拉起服务；电池合盖始终系统默认。
 
-### macOS：协同式睡眠协商（仅 Apple Silicon，无需管理员）
+### macOS：不支持（用户态无解，已实测穷尽）
 
-- 机制对比：`pmset disablesleep` 虽能拦合盖，但会**连 Apple 菜单「睡眠」一并禁用**（该设置本意即"禁用所有睡眠请求"），违背"手动睡眠必须可用、应用须配合"的要求，已弃用；用户态电源断言实测也拦不住合盖（见 06-testing 验证记录）。最终采用 IOKit 文档化的**睡眠协商**：powerd 发出 `kIOPMMessageSystemWillSleep`（30 秒响应窗口），应用回答 `IOAllowPowerChange`（放行）或 `IOCancelPowerChange`（拦截）；
-- **拦截条件**：合盖子菜单为「不动作」**且**内建显示器已离线——Apple Silicon 的 IORegistry 没有公开的合盖状态属性，"内建屏熄灭"是可观测的合盖信号；任何不确定（显示器枚举失败等）一律**放行**（fail-open，绝不把用户锁在唤醒状态外）；
-- **手动睡眠始终可用**：菜单「睡眠」/电源键发生时内建屏在线 → 立即放行，并**主动释放防睡断言**配合休眠（`kIOPMMessageSystemHasPoweredOn` 唤醒后若仍处于激活状态则自动重建）；
-- 模式回到与 Linux 相同的 `lid-mode` 文件（`block`/`allow`），菜单勾选即真实状态；`kIOPMMessageCanSystemSleep`（空闲睡眠询问）恒放行——空闲策略完全由防睡断言表达；
-- 启动时若检测到历史遗留的 `SleepDisabled 1`（旧引导式方案的产物，会让菜单「睡眠」失效），弹一次性对话框引导执行 `sudo pmset -a disablesleep 0` 恢复；
-- 合盖判定：CGDisplayIsBuiltin 的**即时查询在 WillSleep 时刻可能尚未反映离线**（实测时序竞争），因此以 `CGDisplayRegisterReconfigurationCallback` 维护缓存（面板移除/禁用 → 离线），拦截判定读「缓存或即时查询」，任一指示离线即拦截；不确定仍放行（fail-open）。电池下同样拦截（无电源探测），长时间合盖注意电量；Intel 构建直接隐藏合盖菜单（SMC 层强制，协商也拦不住）。
+三类机制在同一台 Apple Silicon 实机上逐一验证，全部无法拦截合盖睡眠：
+
+1. **电源断言**：持有 IOKit `PreventSystemSleep` 时合盖仍进入 Clamshell Sleep；
+2. **睡眠协商取消**：读 IORegistry 的 `AppleClamshellState`（powerd 自己的合盖标志，判定精准）并应答 `IOCancelPowerChange`——powerd 仅将睡眠**延迟约 5 秒**后照常执行，且不再重新询问应用；
+3. **`pmset disablesleep`**：能拦合盖，但会**连 Apple 菜单「睡眠」一并禁用**，违背「手动睡眠必须可用」的硬性要求。
+
+结论：在当前 macOS 上「合盖拦截」与「系统菜单睡眠可用」互斥，按需求优先级取舍——**保菜单睡眠**，macOS 不提供合盖菜单（与 Windows 一致）。应用保留了睡眠协商的**配合**逻辑：菜单「睡眠」/电源键触发时立即应答放行并释放防睡断言（唤醒后自动重建），实测无任何延迟。Intel 构建同样不显示。
 
 ### Windows：不提供
 

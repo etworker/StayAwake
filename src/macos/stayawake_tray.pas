@@ -118,133 +118,19 @@ begin
     NSString.stringWithUTF8String('public.utf8-plain-text'));
 end;
 
-// ---- Lid close (macOS): cooperative sleep negotiation ----------------------
-// Userspace assertions cannot veto clamshell sleep, and `pmset disablesleep`
-// would also kill the Apple-menu Sleep item (user requirement: manual sleep
-// must keep working). The documented mechanism left is the power-management
-// sleep negotiation: powerd broadcasts kIOPMMessageSystemWillSleep with a
-// 30 s window and the app answers IOAllowPowerChange / IOCancelPowerChange.
+// ---- System sleep cooperation (macOS) ---------------------------------------
+// Userspace cannot veto clamshell sleep on current macOS - exhaustively
+// verified: power assertions are ignored, IOCancelPowerChange only delays
+// the sleep by ~5 s, and `pmset disablesleep` would also kill the Apple-menu
+// Sleep item. Manual sleep must keep working, so this app always COOPERATES:
+// powerd broadcasts kIOMessageSystemWillSleep (30 s ack window) and the app
+// answers IOAllowPowerChange immediately, dropping the keep-awake assertion
+// for the duration (re-armed on wake while still active).
 //
-// Policy: veto ONLY while the lid submenu is set to "block" AND the built-in
-// display has gone offline (the observable lid-close signal on Apple
-// Silicon - there is no public lid-state property in the IORegistry).
-// Anything else (menu Sleep, power button, idle) is allowed immediately and
-// the keep-awake assertion is dropped for the duration, re-armed on wake.
-
-// IOService interest messages delivered by IORegisterForSystemPower.
-// NOTE: these are the IOService.h kIOMessage* values (0xE00002x0/3x0), NOT
-// the 0xE0000200-series kIOPMMessage* constants from IOPMLib - using the
-// wrong family makes the handler fall through, sleep stalls 30 s and powerd
-// logs "stayawake timed out(30000 ms)" (verified on-device).
-const
-  kIOMessageCanSystemSleep         = $E0000270;
-  kIOMessageSystemWillSleep        = $E0000280;
-  kIOMessageSystemWillNotSleep     = $E0000290;
-  kIOMessageSystemCapabilityChange = $E0000300;
-  kIOMessageSystemWillPowerOn      = $E0000320;
-  kIOMessageSystemHasPoweredOn     = $E0000330;
-
-type
-  TIORegisterForSystemPower = function(refcon: Pointer; var port: Pointer;
-    handler: Pointer; var notifier: Pointer): Pointer; cdecl;
-  TIONotificationPortGetRunLoopSource = function(port: Pointer): CFRunLoopSourceRef; cdecl;
-  TIOAllowPowerChange = function(connect: Pointer; token: culong): cint; cdecl;
-  TIOCancelPowerChange = function(connect: Pointer; token: culong): cint; cdecl;
-  TCGGetOnlineDisplayList = function(maxDisplays: cuint32; displays: PCUInt;
-    var onlineCount: cuint32): cint; cdecl;
-  TCGDisplayIsBuiltin = function(display: cuint32): Boolean; cdecl;
-  TCGDisplayRegisterReconfigurationCallback = function(cb: Pointer;
-    userInfo: Pointer): cint; cdecl;
-  TIOServiceGetMatchingService = function(mainPort: Pointer;
-    matching: CFMutableDictionaryRef): Pointer; cdecl;
-  TIOServiceMatching = function(name: PAnsiChar): CFMutableDictionaryRef; cdecl;
-  TIORegistryEntryCreateCFProperty = function(entry: Pointer; key: CFStringRef;
-    allocator: CFAllocatorRef; options: cuint32): CFTypeRef; cdecl;
-  TIOObjectRelease = function(obj: Pointer): cint; cdecl;
-
-var
-  PMIONotificationPort: Pointer = nil;
-  PowerConnect: Pointer = nil;
-  IOReg: TLibHandle = NilHandle;
-  IOReg2: TLibHandle = NilHandle;
-  CGDisp: TLibHandle = NilHandle;
-  IORegisterForSystemPower: TIORegisterForSystemPower = nil;
-  IONotificationPortGetRunLoopSource: TIONotificationPortGetRunLoopSource = nil;
-  IOAllowPowerChange: TIOAllowPowerChange = nil;
-  IOCancelPowerChange: TIOCancelPowerChange = nil;
-  CGGetOnlineDisplayList: TCGGetOnlineDisplayList = nil;
-  CGDisplayIsBuiltin: TCGDisplayIsBuiltin = nil;
-  CGDisplayRegisterReconfigurationCallback: TCGDisplayRegisterReconfigurationCallback = nil;
-  IOServiceGetMatchingService: TIOServiceGetMatchingService = nil;
-  IOServiceMatching: TIOServiceMatching = nil;
-  IORegistryEntryCreateCFProperty: TIORegistryEntryCreateCFProperty = nil;
-  IOObjectRelease: TIOObjectRelease = nil;
-
-procedure InitPowerNegotiation;
-begin
-  if IOReg <> NilHandle then
-    Exit;
-  IOReg := LoadLibrary('/System/Library/Frameworks/IOKit.framework/IOKit');
-  if IOReg <> NilHandle then
-  begin
-    Pointer(IORegisterForSystemPower) := GetProcAddress(IOReg, 'IORegisterForSystemPower');
-    Pointer(IONotificationPortGetRunLoopSource) := GetProcAddress(IOReg, 'IONotificationPortGetRunLoopSource');
-    Pointer(IOAllowPowerChange) := GetProcAddress(IOReg, 'IOAllowPowerChange');
-    Pointer(IOCancelPowerChange) := GetProcAddress(IOReg, 'IOCancelPowerChange');
-  end;
-  CGDisp := LoadLibrary('/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics');
-  if CGDisp <> NilHandle then
-  begin
-    Pointer(CGGetOnlineDisplayList) := GetProcAddress(CGDisp, 'CGGetOnlineDisplayList');
-    Pointer(CGDisplayIsBuiltin) := GetProcAddress(CGDisp, 'CGDisplayIsBuiltin');
-    Pointer(CGDisplayRegisterReconfigurationCallback) := GetProcAddress(CGDisp,
-      'CGDisplayRegisterReconfigurationCallback');
-  end;
-  IOReg2 := LoadLibrary('/System/Library/Frameworks/IOKit.framework/IOKit');
-  if IOReg2 <> NilHandle then
-  begin
-    Pointer(IOServiceGetMatchingService) := GetProcAddress(IOReg2, 'IOServiceGetMatchingService');
-    Pointer(IOServiceMatching) := GetProcAddress(IOReg2, 'IOServiceMatching');
-    Pointer(IORegistryEntryCreateCFProperty) := GetProcAddress(IOReg2, 'IORegistryEntryCreateCFProperty');
-    Pointer(IOObjectRelease) := GetProcAddress(IOReg2, 'IOObjectRelease');
-  end;
-end;
-
-function AppleClamshellClosed: Boolean;
-var
-  svc, prop: Pointer;
-  key: CFStringRef;
-begin
-  Result := False;
-  if (IOServiceGetMatchingService = nil) or (IOServiceMatching = nil) or
-     (IORegistryEntryCreateCFProperty = nil) or (IOObjectRelease = nil) then
-    Exit;
-  svc := IOServiceGetMatchingService(nil, IOServiceMatching('IOPMrootDomain'));
-  if svc = nil then
-    Exit;
-  key := CFStringCreateWithCString(nil, PAnsiChar('AppleClamshellState'),
-    kCFStringEncodingUTF8);
-  prop := IORegistryEntryCreateCFProperty(svc, key, nil, 0);
-  if prop <> nil then
-  begin
-    Result := (prop = CFTypeRef(kCFBooleanTrue));
-    CFRelease(prop);
-  end;
-  CFRelease(key);
-  IOObjectRelease(svc);
-end;
-
-function LidVetoActive: Boolean;
-var
-  Mode: string;
-  Clamshell: Boolean;
-begin
-  Mode := LidMode;
-  Clamshell := AppleClamshellClosed;
-  Result := (Mode = 'block') and Clamshell;
-  PowerLog(Format('LidVetoActive: mode=%s clamshell=%s -> veto=%s',
-    [Mode, BoolToStr(Clamshell, True), BoolToStr(Result, True)]));
-end;
+// NOTE: the delivered messages are the IOService.h kIOMessage* values
+// (0xE0000270/80/300/320/330), NOT the 0xE0000200-series kIOPMMessage*
+// constants from IOPMLib - the wrong family makes the handler fall through
+// and sleep stalls 30 s (powerd: "stayawake timed out").
 
 procedure PowerLog(const s: string);
 var
@@ -260,6 +146,40 @@ begin
   finally
     CloseFile(f);
   end;
+end;
+
+const
+  kIOMessageCanSystemSleep         = $E0000270;
+  kIOMessageSystemWillSleep        = $E0000280;
+  kIOMessageSystemWillNotSleep     = $E0000290;
+  kIOMessageSystemCapabilityChange = $E0000300;
+  kIOMessageSystemWillPowerOn      = $E0000320;
+  kIOMessageSystemHasPoweredOn     = $E0000330;
+
+type
+  TIORegisterForSystemPower = function(refcon: Pointer; var port: Pointer;
+    handler: Pointer; var notifier: Pointer): Pointer; cdecl;
+  TIONotificationPortGetRunLoopSource = function(port: Pointer): CFRunLoopSourceRef; cdecl;
+  TIOAllowPowerChange = function(connect: Pointer; token: culong): cint; cdecl;
+
+var
+  PMIONotificationPort: Pointer = nil;
+  PowerConnect: Pointer = nil;
+  IOReg: TLibHandle = NilHandle;
+  IORegisterForSystemPower: TIORegisterForSystemPower = nil;
+  IONotificationPortGetRunLoopSource: TIONotificationPortGetRunLoopSource = nil;
+  IOAllowPowerChange: TIOAllowPowerChange = nil;
+
+procedure InitPowerNegotiation;
+begin
+  if IOReg <> NilHandle then
+    Exit;
+  IOReg := LoadLibrary('/System/Library/Frameworks/IOKit.framework/IOKit');
+  if IOReg = NilHandle then
+    Exit;
+  Pointer(IORegisterForSystemPower) := GetProcAddress(IOReg, 'IORegisterForSystemPower');
+  Pointer(IONotificationPortGetRunLoopSource) := GetProcAddress(IOReg, 'IONotificationPortGetRunLoopSource');
+  Pointer(IOAllowPowerChange) := GetProcAddress(IOReg, 'IOAllowPowerChange');
 end;
 
 procedure PowerEventHandler(refcon: Pointer; service: Pointer;
@@ -282,35 +202,22 @@ begin
       PowerLog('answered CAN-SLEEP allow');
     end;
     kIOMessageSystemWillSleep:
-      if LidVetoActive then
-      begin
-        if IOCancelPowerChange <> nil then
-        begin
-          IOCancelPowerChange(PowerConnect, token);
-          PowerLog('answered WILL-SLEEP CANCEL (lid)');
-        end
-        else
-        begin
-          IOAllowPowerChange(PowerConnect, token);
-          PowerLog('answered WILL-SLEEP allow (no cancel symbol)');
-        end;
-      end
-      else
-      begin
-        OnSystemSleep;   // cooperate: drop the assertion while we sleep
-        IOAllowPowerChange(PowerConnect, token);
-        PowerLog('answered WILL-SLEEP allow (cooperate)');
-      end;
+    begin
+      // Always cooperate: userspace cannot veto clamshell sleep anyway, and
+      // manual sleep (menu / power button) must never be delayed. Drop the
+      // assertion for the duration; re-armed on wake while still active.
+      OnSystemSleep;
+      IOAllowPowerChange(PowerConnect, token);
+      PowerLog('answered WILL-SLEEP allow (cooperate)');
+    end;
     kIOMessageSystemCapabilityChange:
     begin
-      // Acknowledge capability changes; also the reliable re-arm point on
-      // wake cycles that never deliver HasPoweredOn (observed on-device).
-      OnSystemWake;
+      OnSystemWake;      // some wake cycles never deliver HasPoweredOn
       IOAllowPowerChange(PowerConnect, token);
       PowerLog('answered CAPABILITY allow');
     end;
     kIOMessageSystemWillPowerOn:
-      OnSystemWake;      // wake cycles deliver this; HasPoweredOn often not
+      OnSystemWake;
     kIOMessageSystemHasPoweredOn:
     begin
       OnSystemWake;      // re-arm the assertion if still active
@@ -396,8 +303,7 @@ var
 begin
   alert := NSAlert.alloc.init;
   alert.setMessageText(NSString.stringWithUTF8String(PChar(L(SAbout))));
-  info := AboutText + #10#10 +
-      '合盖行为(接电源时)可在托盘菜单切换(Apple Silicon)。';
+  info := AboutText;
   alert.setInformativeText(NSString.stringWithUTF8String(PChar(info)));
   // The bundle ships no .icns, so NSAlert would fall back to the generic
   // system app icon; show the colored eye instead (same artwork as the tray).
@@ -557,22 +463,20 @@ end;
 
 // ---- Entry point ------------------------------------------------------------
 
-// Platform config/hooks must be ready BEFORE the main body starts:
-// stayawake.lpr runs StartMoverThread (which applies the lid guard) prior
-// to TrayCreate, so this is wired via the unit's initialization section
-// (at the bottom) rather than from TrayCreate.
+// Platform config/hooks must be ready BEFORE the main body starts (the
+// shared core reads config paths at any time); wired via the unit's
+// initialization section (at the bottom) rather than from TrayCreate.
 procedure InitPlatformConfig;
 begin
   TrayConfigDir := GetEnvironmentVariable('HOME');
   if TrayConfigDir <> '' then
     TrayConfigDir := TrayConfigDir + '/Library/Application Support';
 
-  // `pmset disablesleep` (the only lid-close lever) is honored on Apple
-  // Silicon; Intel Macs enforce clamshell sleep at the SMC layer, where the
-  // admin command changes nothing. Hide the submenu on x86_64 instead of
-  // prompting for a password that cannot work.
-  TrayHooks.HasLid := Pos('arm64',
-    LowerCase(PopenRead('/usr/bin/uname -m 2>/dev/null'))) > 0;
+  // No lid-close feature on macOS: exhaustively verified that userspace
+  // cannot veto clamshell sleep (assertions ignored; IOCancelPowerChange
+  // only delays ~5 s; pmset disablesleep would also kill the Sleep menu).
+  // See docs/02-design.md for the evidence trail.
+  TrayHooks.HasLid := False;
 
   TrayHooks.RefreshVisual := @HookRefreshVisual;
   TrayHooks.ApplyAwake := @HookApplyAwake;
