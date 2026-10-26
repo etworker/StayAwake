@@ -28,7 +28,7 @@
 
 ## 限制速览
 
-只拦截「空闲导致」的睡眠。合盖拦截能力：Linux ✅（装守卫后）、macOS ⚠️（需一次性管理员命令，菜单引导）、Windows ❌。完整清单见 [docs/01-requirements.md](docs/01-requirements.md)。
+只拦截「空闲导致」的睡眠。合盖拦截能力：Linux ✅（装守卫后）、macOS ✅（协同式协商，菜单「睡眠」不受影响）、Windows ❌。完整清单见 [docs/01-requirements.md](docs/01-requirements.md)。
 
 ## 文档
 

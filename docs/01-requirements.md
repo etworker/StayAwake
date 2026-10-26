@@ -47,6 +47,6 @@ StayAwake 是一个常驻**托盘**的小工具：以「模拟活动 + 系统电
 | 平台 | 限制 |
 | ---- | ---- |
 | Windows | 合盖行为的系统策略修改需要管理员且常被管控机隐藏，故不提供合盖菜单（详见 02-design） |
-| macOS | 用户态电源断言无法拦截合盖（实测 `PreventSystemSleep` 持有时合盖仍进入 Clamshell Sleep）；可靠途径是 `sudo pmset disablesleep`（需一次管理员），产品以**系统密码框**引导；该设置仅 Apple Silicon 服从，Intel 上无效，故 Intel 构建直接不显示合盖菜单 |
+| macOS | 用户态断言拦不住合盖、`pmset disablesleep` 会连菜单「睡眠」一起禁用——最终采用 IOKit 睡眠协商（内建屏离线时拦截睡眠请求，其余一律放行），无需管理员；仅 Apple Silicon 提供合盖菜单，Intel 不显示 |
 | Linux | 合盖守卫需要先安装 `src/linux/lid-guard/` 的用户级 systemd 服务（`install.sh`，免 sudo） |
 | 全平台 | 只能阻止「空闲导致」的睡眠；合盖在未启用守卫时按系统默认处理 |
