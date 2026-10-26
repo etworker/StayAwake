@@ -31,6 +31,7 @@ end;
 
 var
   LockFd: cInt = -1;
+  LegacyFd: cInt = -1;
 
 function AcquireSingleInstance: Boolean;
 begin
@@ -45,6 +46,21 @@ begin
     FpClose(LockFd);
     LockFd := -1;
     Exit;
+  end;
+  // Also lock the legacy v0.1.x path (/tmp/stayawake_single.lock): a still
+  // running pre-0.2 instance holds THAT file, not the one above, and would
+  // otherwise coexist with the new instance during upgrades.
+  LegacyFd := FpOpen('/tmp/stayawake_single.lock', O_RDWR or O_CREAT, &600);
+  if LegacyFd >= 0 then
+  begin
+    if FpFlock(LegacyFd, LOCK_EX or LOCK_NB) <> 0 then
+    begin
+      FpClose(LegacyFd);
+      LegacyFd := -1;
+      FpClose(LockFd);
+      LockFd := -1;
+      Exit;
+    end;
   end;
   Result := True;
 end;

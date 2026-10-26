@@ -130,10 +130,18 @@ end;
 // Anything else (menu Sleep, power button, idle) is allowed immediately and
 // the keep-awake assertion is dropped for the duration, re-armed on wake.
 
+// IOService interest messages delivered by IORegisterForSystemPower.
+// NOTE: these are the IOService.h kIOMessage* values (0xE00002x0/3x0), NOT
+// the 0xE0000200-series kIOPMMessage* constants from IOPMLib - using the
+// wrong family makes the handler fall through, sleep stalls 30 s and powerd
+// logs "stayawake timed out(30000 ms)" (verified on-device).
 const
-  kIOPMMessageSystemWillSleep    = $E0000200;
-  kIOPMMessageCanSystemSleep     = $E0000201;
-  kIOPMMessageSystemHasPoweredOn = $E0000203;
+  kIOMessageCanSystemSleep         = $E0000270;
+  kIOMessageSystemWillSleep        = $E0000280;
+  kIOMessageSystemWillNotSleep     = $E0000290;
+  kIOMessageSystemCapabilityChange = $E0000300;
+  kIOMessageSystemWillPowerOn      = $E0000320;
+  kIOMessageSystemHasPoweredOn     = $E0000330;
 
 type
   TIORegisterForSystemPower = function(refcon: Pointer; var port: Pointer;
@@ -208,33 +216,76 @@ begin
   Result := (LidMode = 'block') and BuiltinDisplayGone;
 end;
 
+procedure PowerLog(const s: string);
+var
+  f: TextFile;
+begin
+  AssignFile(f, '/tmp/stayawake_power.log');
+  if FileExists('/tmp/stayawake_power.log') then
+    Append(f)
+  else
+    Rewrite(f);
+  try
+    WriteLn(f, FormatDateTime('hh:nn:ss.zzz', Now), ' ', s);
+  finally
+    CloseFile(f);
+  end;
+end;
+
 procedure PowerEventHandler(refcon: Pointer; service: Pointer;
   msgType: cuint32; arg: Pointer); cdecl;
 var
   token: culong;
 begin
   token := culong(PtrUInt(arg));
+  PowerLog('FIRED msg=0x' + IntToHex(msgType, 8));
   if (PowerConnect = nil) or (IOAllowPowerChange = nil) then
+  begin
+    PowerLog('ABORT: connect/symbols nil');
     Exit;
+  end;
   case msgType of
-    kIOPMMessageCanSystemSleep:
+    kIOMessageCanSystemSleep:
+    begin
       // Idle sleep: policy is already expressed via the keep-awake assertion.
       IOAllowPowerChange(PowerConnect, token);
-    kIOPMMessageSystemWillSleep:
+      PowerLog('answered CAN-SLEEP allow');
+    end;
+    kIOMessageSystemWillSleep:
       if LidVetoActive then
       begin
         if IOCancelPowerChange <> nil then
-          IOCancelPowerChange(PowerConnect, token)
+        begin
+          IOCancelPowerChange(PowerConnect, token);
+          PowerLog('answered WILL-SLEEP CANCEL (lid)');
+        end
         else
+        begin
           IOAllowPowerChange(PowerConnect, token);
+          PowerLog('answered WILL-SLEEP allow (no cancel symbol)');
+        end;
       end
       else
       begin
         OnSystemSleep;   // cooperate: drop the assertion while we sleep
         IOAllowPowerChange(PowerConnect, token);
+        PowerLog('answered WILL-SLEEP allow (cooperate)');
       end;
-    kIOPMMessageSystemHasPoweredOn:
+    kIOMessageSystemCapabilityChange:
+    begin
+      // Acknowledge capability changes; also the reliable re-arm point on
+      // wake cycles that never deliver HasPoweredOn (observed on-device).
+      OnSystemWake;
+      IOAllowPowerChange(PowerConnect, token);
+      PowerLog('answered CAPABILITY allow');
+    end;
+    kIOMessageSystemWillPowerOn:
+      OnSystemWake;      // wake cycles deliver this; HasPoweredOn often not
+    kIOMessageSystemHasPoweredOn:
+    begin
       OnSystemWake;      // re-arm the assertion if still active
+      PowerLog('powered-on: re-armed');
+    end;
   end;
 end;
 
@@ -247,9 +298,12 @@ begin
     Exit;
   PowerConnect := IORegisterForSystemPower(nil, PMIONotificationPort,
     @PowerEventHandler, notifier);
+  PowerLog(Format('registered connect=%s port=%s', [
+    HexStr(PowerConnect), HexStr(PMIONotificationPort)]));
   if PowerConnect = nil then
     Exit;
   src := IONotificationPortGetRunLoopSource(PMIONotificationPort);
+  PowerLog(Format('runloop source=%s', [HexStr(src)]));
   if src <> nil then
     CFRunLoopAddSource(CFRunLoopGetMain(), src, kCFRunLoopDefaultMode);
 end;

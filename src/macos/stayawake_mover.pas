@@ -21,6 +21,22 @@ uses
   ctypes,
   MacOSAll;
 
+procedure PowerLog(const s: string);
+var
+  f: TextFile;
+begin
+  AssignFile(f, '/tmp/stayawake_power.log');
+  if FileExists('/tmp/stayawake_power.log') then
+    Append(f)
+  else
+    Rewrite(f);
+  try
+    WriteLn(f, FormatDateTime('hh:nn:ss.zzz', Now), ' [mover] ', s);
+  finally
+    CloseFile(f);
+  end;
+end;
+
 type
   CGPoint = record
     x: Double;
@@ -155,6 +171,7 @@ begin
       CFRelease(atype);
     if res = 0 then
       gAssertionOn := True;
+    PowerLog(Format('UpdateExecutionState: create res=%d', [res]));
   end
   else
   begin
@@ -172,6 +189,7 @@ end;
 // keeps powerd's view clean; re-created on wake while still active.
 procedure OnSystemSleep;
 begin
+  PowerLog(Format('OnSystemSleep: held=%s', [BoolToStr(gAssertionOn, True)]));
   if gAssertionOn and (IOPMAssertionRelease <> nil) and (gAssertionID <> 0) then
   begin
     IOPMAssertionRelease(gAssertionID);
@@ -183,10 +201,12 @@ end;
 
 procedure OnSystemWake;
 begin
+  PowerLog(Format('OnSystemWake: coop=%s active=%s', [BoolToStr(gSleepCoop, True), BoolToStr(AppActive, True)]));
   if gSleepCoop then
   begin
     gSleepCoop := False;
     UpdateExecutionState;
+    PowerLog('OnSystemWake: re-arm done');
   end;
 end;
 
