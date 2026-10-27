@@ -45,6 +45,8 @@ var
 function MakeTrayNSImage: NSImage; forward;
 function MakeEyeNSImage(Px, Pt: Integer; Template: Boolean): NSImage; forward;
 procedure PowerLog(const s: string); forward;
+function LidGuardInstalled: Boolean; forward;
+procedure RunSudoPmset(const args: string); forward;
 const
   SEnableCmd = 'sudo pmset -a disablesleep 1';
   SDisableCmd = 'sudo pmset -a disablesleep 0';
@@ -97,6 +99,21 @@ begin
   pb.setString_forType(
     NSString.stringWithUTF8String(PChar(text)),
     NSString.stringWithUTF8String('public.utf8-plain-text'));
+end;
+
+// True after the user ran guard/install.sh once: a scoped NOPASSWD sudoers
+// entry whitelists exactly our three pmset commands, so toggling the guard
+// and Sleep Now run without any password (until the entry is removed).
+function LidGuardInstalled: Boolean;
+begin
+  Result := FileExists('/etc/sudoers.d/stayawake');
+end;
+
+// sudo -n never prompts; callers must check LidGuardInstalled first.
+procedure RunSudoPmset(const args: string);
+begin
+  PowerLog('sudo pmset ' + args);
+  system(PAnsiChar(AnsiString('/usr/bin/sudo -n /usr/bin/pmset ' + args + ' 2>/dev/null')));
 end;
 
 // ---- Platform hooks ---------------------------------------------------------
@@ -211,20 +228,28 @@ begin
     system('/usr/bin/pmset sleepnow');
     Exit;
   end;
-  // Guard on: disablesleep blocks every sleep request, including this one,
-  // so run one elevated command that lifts the guard, sleeps, and re-arms
-  // ~20 s after the machine wakes (the root shell is frozen while asleep,
-  // so the 20 s count effectively resumes on wake). One password, guard
-  // restored automatically.
-  PowerLog('SleepNow with guard on: lifting via authorization dialog');
-  if RunRootCommand('/bin/sh', ['-c',
-      '/usr/bin/pmset -a disablesleep 0; /usr/bin/pmset sleepnow; sleep 20; /usr/bin/pmset -a disablesleep 1'])
-  then
-    PowerLog('SleepNow cycle dispatched')
+  // Guard armed: disablesleep blocks every sleep request, including this
+  // one. With the sudoers entry installed, lift + sleep + re-arm runs
+  // passwordless; the subshell re-arms ~20 s after the machine wakes (the
+  // root shell is frozen while asleep, so the delay effectively resumes on
+  // wake) and is backgrounded so the menu thread is not blocked.
+  if LidGuardInstalled then
+  begin
+    PowerLog('SleepNow (guarded): passwordless lift + sleep + re-arm');
+    system(PAnsiChar(AnsiString(
+      '/bin/sh -c "/usr/bin/sudo -n /usr/bin/pmset -a disablesleep 0; ' +
+      '/usr/bin/sudo -n /usr/bin/pmset sleepnow; ' +
+      '( sleep 20; /usr/bin/sudo -n /usr/bin/pmset -a disablesleep 1 ) >/dev/null 2>&1"')));
+  end
   else
   begin
-    PowerLog('SleepNow authorization canceled/failed');
-    ShowLidGuideDialog(True);   // fallback: the clipboard guide
+    // Guard armed but the passwordless path was never installed: fall back
+    // to the standard administrator-password dialog.
+    PowerLog('SleepNow (guarded, not installed): authorization dialog');
+    if not RunRootCommand('/bin/sh', ['-c',
+        '/usr/bin/pmset -a disablesleep 0; /usr/bin/pmset sleepnow; sleep 20; /usr/bin/pmset -a disablesleep 1'])
+    then
+      ShowLidGuideDialog(True);
   end;
 end;
 
@@ -319,7 +344,16 @@ begin
   now := HookLidState;
   if ABlock = now then
     Exit; // already in the requested state
-  ShowLidGuideDialog(ABlock);
+  if LidGuardInstalled then
+  begin
+    // Passwordless: the scoped sudoers entry whitelists this exact command.
+    if ABlock then
+      RunSudoPmset('-a disablesleep 1')
+    else
+      RunSudoPmset('-a disablesleep 0');
+  end
+  else
+    ShowLidGuideDialog(ABlock);
   if Assigned(TrayHooks.RefreshVisual) then
     TrayHooks.RefreshVisual;
 end;
