@@ -251,7 +251,21 @@ end;
 procedure ShowTrayMenu;
 var
   pt: TPoint;
+  i: Integer;
 begin
+  // States can change outside the app (e.g. the user ran the lid command in
+  // a terminal) - re-sync right before showing.
+  for i := 0 to High(Bindings) do
+    with Bindings[i] do
+      case Node^.Kind of
+        mkCheck, mkRadio:
+        begin
+          if MenuActionState(Node^.Action) then
+            CheckMenuItem(ParentMenu, Ord(Node^.Action), MF_BYCOMMAND or MF_CHECKED)
+          else
+            CheckMenuItem(ParentMenu, Ord(Node^.Action), MF_BYCOMMAND or MF_UNCHECKED);
+        end;
+      end;
   SetForegroundWindow(TrayHwnd);
   GetCursorPos(pt);
   TrackPopupMenu(TrayMenu, TPM_LEFTALIGN or TPM_BOTTOMALIGN or TPM_RIGHTBUTTON, pt.x, pt.y, 0, TrayHwnd, nil);

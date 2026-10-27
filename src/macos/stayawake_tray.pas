@@ -28,6 +28,7 @@ type
   TStayAwakeApp = objcclass(NSObject)
   public
     procedure trayAction(sender: id); message 'trayAction:';
+    procedure menuNeedsUpdate(menu: NSMenu); message 'menuNeedsUpdate:';
   end;
 
   TItemBinding = record
@@ -54,6 +55,9 @@ procedure HookLidRequest(ABlock: Boolean); cdecl; forward;
 
 // libc stdio for capturing pmset output (avoids a TProcess dependency; libc
 // is always linked on darwin). system() runs a command and waits.
+function objc_getClass(name: PAnsiChar): id; cdecl; external 'objc' name 'objc_getClass';
+function sel_getUid(name: PAnsiChar): SEL; cdecl; external 'objc' name 'sel_getUid';
+function objc_msgSend_del(obj: id; sel: SEL; arg1: id): id; cdecl; external 'objc' name 'objc_msgSend';
 function popen(cmd: PAnsiChar; mode: PAnsiChar): Pointer; cdecl; external 'c' name 'popen';
 function pclose(stream: Pointer): cint; cdecl; external 'c' name 'pclose';
 function fgets(buf: PAnsiChar; size: cint; stream: Pointer): PAnsiChar; cdecl; external 'c' name 'fgets';
@@ -95,20 +99,14 @@ end;
 
 // ---- Platform hooks ---------------------------------------------------------
 
-procedure HookRefreshVisual; cdecl;
+// Re-read every checkable/radio state from the shared core. Called after
+// any action and, via menuNeedsUpdate:, every time the menu is about to
+// open - so states changed OUTSIDE the app (e.g. the user ran the lid
+// guard command in a terminal) show up immediately.
+procedure SyncMenuStates;
 var
-  img: NSImage;
   i: Integer;
 begin
-  if StatusItem = nil then
-    Exit;
-  img := MakeTrayNSImage;
-  if img <> nil then
-  begin
-    StatusItem.setImage(img);
-    img.release;
-  end;
-  StatusItem.setToolTip(NSString.stringWithUTF8String(PChar(TrayTooltip)));
   for i := 0 to High(Bindings) do
     with Bindings[i] do
       case Node^.Kind of
@@ -120,6 +118,22 @@ begin
             Item.setState(NSOffState);
         end;
       end;
+end;
+
+procedure HookRefreshVisual; cdecl;
+var
+  img: NSImage;
+begin
+  if StatusItem = nil then
+    Exit;
+  img := MakeTrayNSImage;
+  if img <> nil then
+  begin
+    StatusItem.setImage(img);
+    img.release;
+  end;
+  StatusItem.setToolTip(NSString.stringWithUTF8String(PChar(TrayTooltip)));
+  SyncMenuStates;
 end;
 
 procedure HookApplyAwake; cdecl;
@@ -407,6 +421,12 @@ begin
   MenuActionInvoke(TMenuAction(NSMenuItem(sender).tag));
 end;
 
+// Called by AppKit right before the status-item menu is displayed.
+procedure TStayAwakeApp.menuNeedsUpdate(menu: NSMenu);
+begin
+  SyncMenuStates;
+end;
+
 function NewMenuItemFor(Node: PMenuNode): NSMenuItem;
 begin
   Result := NSMenuItem.alloc.initWithTitle_action_keyEquivalent(
@@ -583,6 +603,10 @@ begin
   FillMenu(menu, MenuRoot);
 
   StatusItem.setMenu(menu);
+  // setDelegate's static type wants NSMenuDelegateProtocol; the informal
+  // delegate only needs to respond to menuNeedsUpdate:, so assign via
+  // objc_msgSend.
+  objc_msgSend_del(menu, sel_getUid('setDelegate:'), AppDelegate);
   menu.release;
 
   InitPowerNegotiation;
