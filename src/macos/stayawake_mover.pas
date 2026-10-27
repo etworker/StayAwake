@@ -64,14 +64,9 @@ type
   TIORegistryEntryCreateCFProperty = function(entry: Pointer; key: CFStringRef;
     allocator: Pointer; options: cuint32): Pointer; cdecl;
   TIOObjectRelease = function(obj: Pointer): cint; cdecl;
-  TCGGetOnlineDisplayList = function(maxDisplays: cuint32; displays: PCUInt;
-    var onlineCount: cuint32): cint; cdecl;
-  TCGDisplayIsBuiltin = function(display: cuint32): Boolean; cdecl;
-  TCGDisplayIsActive = function(display: cuint32): Boolean; cdecl;
 
 var
   CGHandle: TLibHandle;
-  CGDisp: TLibHandle = NilHandle;
   CGEventCreate: TCGEventCreate;
   CGEventGetLocation: TCGEventGetLocation;
   CGEventCreateMouseEvent: TCGEventCreateMouseEvent;
@@ -87,16 +82,14 @@ var
   gAssertionID: cuint32 = 0;
   gAssertionOn: Boolean = False;
   gSleepCoop: Boolean = False;   // released for an allowed system sleep; re-arm on wake
-  // Lid policy state
+  // Lid policy registry symbols
+  gLastAppliedC: Integer = -1;   // last disablesleep value applied per source
+  gLastAppliedB: Integer = -1;
   IOServiceGetMatchingService: TIOServiceGetMatchingService = nil;
   IOServiceMatching: TIOServiceMatching = nil;
   IORegistryEntryCreateCFProperty: TIORegistryEntryCreateCFProperty = nil;
   IOObjectRelease: TIOObjectRelease = nil;
-  CGGetOnlineDisplayList: TCGGetOnlineDisplayList = nil;
-  CGDisplayIsBuiltin: TCGDisplayIsBuiltin = nil;
-  CGDisplayIsActive: TCGDisplayIsActive = nil;
-  gLastAppliedC: Integer = -1;   // last disablesleep value applied per source
-  gLastAppliedB: Integer = -1;
+  // Lid policy state
   gClosedSince: TDateTime = 0;
   gWasClosed: Boolean = False;
   gBatSleepSent: Boolean = False;
@@ -119,9 +112,6 @@ begin
   CGEventCreateMouseEvent := TCGEventCreateMouseEvent(GetProcAddress(CGHandle, 'CGEventCreateMouseEvent'));
   CGEventPost := TCGEventPost(GetProcAddress(CGHandle, 'CGEventPost'));
   CGFRelease := TCFRelease(GetProcAddress(CGHandle, 'CFRelease'));
-  CGGetOnlineDisplayList := TCGGetOnlineDisplayList(GetProcAddress(CGHandle, 'CGGetOnlineDisplayList'));
-  CGDisplayIsBuiltin := TCGDisplayIsBuiltin(GetProcAddress(CGHandle, 'CGDisplayIsBuiltin'));
-  CGDisplayIsActive := TCGDisplayIsActive(GetProcAddress(CGHandle, 'CGDisplayIsActive'));
 end;
 
 procedure NudgeMouse;
@@ -174,6 +164,12 @@ begin
     GetProcAddress(PMHandle, 'IOPMAssertionCreateWithName'));
   IOPMAssertionRelease := TIOPMAssertionRelease(
     GetProcAddress(PMHandle, 'IOPMAssertionRelease'));
+  IOServiceGetMatchingService := TIOServiceGetMatchingService(
+    GetProcAddress(PMHandle, 'IOServiceGetMatchingService'));
+  IOServiceMatching := TIOServiceMatching(GetProcAddress(PMHandle, 'IOServiceMatching'));
+  IORegistryEntryCreateCFProperty := TIORegistryEntryCreateCFProperty(
+    GetProcAddress(PMHandle, 'IORegistryEntryCreateCFProperty'));
+  IOObjectRelease := TIOObjectRelease(GetProcAddress(PMHandle, 'IOObjectRelease'));
 end;
 
 function popen(cmd: PAnsiChar; mode: PAnsiChar): Pointer; cdecl; external 'c' name 'popen';
@@ -213,15 +209,32 @@ begin
   system(PAnsiChar(AnsiString('/usr/bin/sudo -n /usr/bin/pmset ' + args + ' 2>/dev/null')));
 end;
 
-// True when running on AC power (parses `pmset -g batt`); fails open to
-// False = treated as battery (conservative).
-function OnACPower: Boolean;
+// The lid state from powerd itself: AppleClamshellState in the
+// IOPMrootDomain registry. Verified on-device (Apple Silicon, 2026-10):
+// it flips true/false with the lid even while pmset disablesleep is
+// armed, and it updates before the sleep request - the reliable signal.
+function AppleClamshellClosed: Boolean;
 var
-  outp: string;
+  svc, prop: Pointer;
+  key: CFStringRef;
 begin
   Result := False;
-  outp := PopenRead('/usr/bin/pmset -g batt 2>/dev/null');
-  Result := Pos('AC Power', outp) > 0;
+  if (IOServiceGetMatchingService = nil) or (IOServiceMatching = nil) or
+     (IORegistryEntryCreateCFProperty = nil) or (IOObjectRelease = nil) then
+    Exit;
+  svc := IOServiceGetMatchingService(nil, IOServiceMatching('IOPMrootDomain'));
+  if svc = nil then
+    Exit;
+  key := CFStringCreateWithCString(nil, PAnsiChar('AppleClamshellState'),
+    kCFStringEncodingUTF8);
+  prop := IORegistryEntryCreateCFProperty(svc, key, nil, 0);
+  if prop <> nil then
+  begin
+    Result := prop = CFTypeRef(kCFBooleanTrue);
+    CFRelease(prop);
+  end;
+  CFRelease(key);
+  IOObjectRelease(svc);
 end;
 
 // Tell macOS we are actively presenting so idle sleep / display sleep is
@@ -251,7 +264,6 @@ begin
       CFRelease(atype);
     if res = 0 then
       gAssertionOn := True;
-    PowerLog(Format('UpdateExecutionState: create res=%d', [res]));
   end
   else
   begin
@@ -290,91 +302,22 @@ begin
   end;
 end;
 
+// True when running on AC power (parses `pmset -g batt`); fails open to
+// False = treated as battery (conservative).
+function OnACPower: Boolean;
+var
+  outp: string;
+begin
+  outp := PopenRead('/usr/bin/pmset -g batt 2>/dev/null');
+  Result := Pos('AC Power', outp) > 0;
+end;
+
 // ---- Lid policy (per power source) -------------------------------------------
 // block mode: AC closed -> stay awake indefinitely; battery closed -> stay
 // awake for LidBatteryMinutes then sleep (and stay asleep). Disablesleep is
 // applied per source via the passwordless sudoers whitelist; the sleep at
 // timer expiry is `pmset sleepnow` (global, but the machine is on battery
 // at that point).
-function BuiltinDisplayOnline: Boolean;
-var
-  ids: array[0..15] of cuint32;
-  n, i: cuint32;
-  builtin: Boolean;
-begin
-  // Built-in panel online = lid open; offline = closed. Under disablesleep
-  // the system ignores the lid switch entirely (AppleClamshellState stays
-  // false), so the panel power state is the observable lid signal.
-  Result := True;   // uncertain -> treat as online (fail open)
-  if (CGGetOnlineDisplayList = nil) or (CGDisplayIsBuiltin = nil) then
-    Exit;
-  n := 0;
-  if CGGetOnlineDisplayList(Length(ids), @ids[0], n) <> 0 then
-    Exit;
-  builtin := False;
-  for i := 0 to n - 1 do
-    if CGDisplayIsBuiltin(ids[i]) then
-    begin
-      builtin := True;
-      Break;
-    end;
-  Result := builtin;
-end;
-
-function BuiltinDisplayLit: Boolean;
-var
-  ids: array[0..15] of cuint32;
-  n, i: cuint32;
-  lit: Boolean;
-begin
-  // Built-in panel present AND lit = lid open. The panel drops off the
-  // lit list the instant the lid closes (display powers down even while
-  // the system stays awake), so this is a zero-lag lid signal.
-  Result := True;   // uncertain -> treat as lit/lid-open (fail open)
-  if (CGGetOnlineDisplayList = nil) or (CGDisplayIsBuiltin = nil) or
-     (CGDisplayIsActive = nil) then
-    Exit;
-  n := 0;
-  if CGGetOnlineDisplayList(Length(ids), @ids[0], n) <> 0 then
-    Exit;
-  lit := False;
-  for i := 0 to n - 1 do
-    if CGDisplayIsBuiltin(ids[i]) and CGDisplayIsActive(ids[i]) then
-    begin
-      lit := True;
-      Break;
-    end;
-  Result := lit;
-end;
-
-// The lid state from powerd itself: AppleClamshellState in the
-// IOPMrootDomain registry. Verified on-device (Apple Silicon, 2026-10):
-// it flips true/false with the lid even while pmset disablesleep is
-// armed, and it updates before the sleep request - the reliable signal.
-function AppleClamshellClosed: Boolean;
-var
-  svc, prop: Pointer;
-  key: CFStringRef;
-begin
-  Result := False;
-  if (IOServiceGetMatchingService = nil) or (IOServiceMatching = nil) or
-     (IORegistryEntryCreateCFProperty = nil) or (IOObjectRelease = nil) then
-    Exit;
-  svc := IOServiceGetMatchingService(nil, IOServiceMatching('IOPMrootDomain'));
-  if svc = nil then
-    Exit;
-  key := CFStringCreateWithCString(nil, PAnsiChar('AppleClamshellState'),
-    kCFStringEncodingUTF8);
-  prop := IORegistryEntryCreateCFProperty(svc, key, nil, 0);
-  if prop <> nil then
-  begin
-    Result := prop = Pointer(kCFBooleanTrue);
-    CFRelease(prop);
-  end;
-  CFRelease(key);
-  IOObjectRelease(svc);
-end;
-
 procedure LidPolicyApply;
 var
   acAwake: Boolean;
@@ -384,7 +327,7 @@ var
 begin
   acAwake := LidAcAwake;
   mins := LidBatteryMinutes;
-  lidClosed := not BuiltinDisplayLit;
+  lidClosed := AppleClamshellClosed;
   if lidClosed and (not gWasClosed) then
   begin
     gClosedSince := Now;
