@@ -178,6 +178,13 @@ begin
     case node^.Kind of
       mkSep:
         gtk_menu_shell_append(GTK_MENU_SHELL(Dest), gtk_separator_menu_item_new);
+      mkHeader:
+      begin
+        // Gray section header: visible, not clickable.
+        item := gtk_menu_item_new_with_label(PChar(L(node^.Text)));
+        gtk_widget_set_sensitive(item, False);
+        gtk_menu_shell_append(GTK_MENU_SHELL(Dest), item);
+      end;
       mkSubmenu:
       begin
         sub := gtk_menu_new;

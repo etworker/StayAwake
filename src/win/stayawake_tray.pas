@@ -229,6 +229,12 @@ begin
     case node^.Kind of
       mkSep:
         AppendMenuW(Dest, MF_SEPARATOR, 0, nil);
+      mkHeader:
+      begin
+        // Gray section header: visible, not clickable.
+        AppendMenuW(Dest, MF_STRING or MF_GRAYED, 0,
+          PWideChar(UTF8Decode(L(node^.Text))));
+      end;
       mkSubmenu:
       begin
         sub := CreatePopupMenu;

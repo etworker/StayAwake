@@ -165,22 +165,23 @@ begin
     (Root^.Sub[5]^.Text[tlZh] = SSleepNow[tlZh]));
   FreeTrayMenu(Root);
 
-  // macOS per-source tree: AC checkbox + battery radios (incl. system default)
+  // macOS per-source tree: flat sections - AC checkbox + battery radios
   Root := BuildTrayMenu(True, True, True);
   Check('D12b full mac tree has 12 top nodes', CountChildren(Root) = 12);
   Lid := Root^.Sub[2];
-  Check('D12c lid submenu has ac/sep/bat = 3 children', CountChildren(Lid) = 3);
-  Check('D12d AC entry is a checkbox', (Lid^.Sub[0]^.Kind = mkCheck) and
-    (Lid^.Sub[0]^.Action = maAcLidAwake));
-  Bat := Lid^.Sub[2];
-  Check('D12e battery submenu is a group of 5 radios',
-    (Bat^.Kind = mkSubmenu) and (CountChildren(Bat) = 5) and
-    (Bat^.Sub[0]^.Action = maBatClose) and (Bat^.Sub[1]^.Action = maBat5) and
-    (Bat^.Sub[4]^.Action = maBat60) and (Bat^.Sub[0]^.RadioGroup = Bat^.Sub[4]^.RadioGroup));
+  Check('D12c lid submenu is flat with 9 children', CountChildren(Lid) = 9);
+  Check('D12d ac header + checkbox',
+    (Lid^.Sub[0]^.Kind = mkHeader) and (Lid^.Sub[0]^.Action = maNone) and
+    (Lid^.Sub[1]^.Kind = mkCheck) and (Lid^.Sub[1]^.Action = maAcLidAwake));
+  Check('D12e bat header + 5 radios (close first)',
+    (Lid^.Sub[3]^.Kind = mkHeader) and
+    (Lid^.Sub[4]^.Kind = mkRadio) and (Lid^.Sub[4]^.Action = maBatClose) and
+    (Lid^.Sub[8]^.Action = maBat60) and
+    (Lid^.Sub[4]^.RadioGroup = Lid^.Sub[8]^.RadioGroup));
   Check('D12f battery labels localized',
-    (Bat^.Sub[0]^.Text[tlZh] = '合盖立即睡眠(默认)') and
-    (Bat^.Sub[1]^.Text[tlZh] = '保持清醒 5 分钟后睡眠') and
-    (Bat^.Sub[4]^.Text[tlEn] = 'Stay awake 60 min, then sleep'));
+    (Lid^.Sub[4]^.Text[tlZh] = '合盖睡眠(默认)') and
+    (Lid^.Sub[5]^.Text[tlZh] = '保持清醒 5 分钟后睡眠') and
+    (Lid^.Sub[8]^.Text[tlEn] = 'Stay awake 60 min, then sleep'));
   FreeTrayMenu(Root);
 end;
 

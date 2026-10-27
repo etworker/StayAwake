@@ -534,6 +534,13 @@ begin
         Dest.addItem(sub);
         Bind(node, sub);
       end;
+    mkHeader:
+    begin
+      // Gray section header: visible, not clickable.
+      item := NewMenuItemFor(node);
+      item.setEnabled(False);
+      Dest.addItem(item);
+    end;
     else
       item := NewMenuItemFor(node);
       Dest.addItem(item);
@@ -622,9 +629,8 @@ begin
   TrayHooks.LidPerSource := True;
 
   LidTextTitle[tlEn] := 'When the lid is closed';           LidTextTitle[tlZh] := '合盖时';
-  LidAcAwakeText[tlEn] := SAcLidAwake[tlEn];                LidAcAwakeText[tlZh] := SAcLidAwake[tlZh];
-  LidBatTitle[tlEn] := SBatTitle[tlEn];                     LidBatTitle[tlZh] := SBatTitle[tlZh];
-  LidBatCloseText[tlEn] := SBatClose[tlEn];                 LidBatCloseText[tlZh] := SBatClose[tlZh];
+  LidTextAcHeader[tlEn] := SLidAcHeader[tlEn];              LidTextAcHeader[tlZh] := SLidAcHeader[tlZh];
+  LidTextBatHeader[tlEn] := SLidBatHeader[tlEn];            LidTextBatHeader[tlZh] := SLidBatHeader[tlZh];
 
   // One-time migration from the old block/allow lid-mode file: 'block'
   // becomes AC-awake + 15 min battery timer.

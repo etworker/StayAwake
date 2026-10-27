@@ -64,7 +64,7 @@ type
     maQuit
   );
 
-  TMenuItemKind = (mkItem, mkCheck, mkRadio, mkSubmenu, mkSep);
+  TMenuItemKind = (mkItem, mkCheck, mkRadio, mkSubmenu, mkSep, mkHeader);
 
   PMenuNode = ^TMenuNode;
   TMenuNode = record
@@ -113,7 +113,9 @@ const
   SLidBlock: TStrMap = ('Do Nothing (Guard blocks sleep)', '不动作(守卫拦截睡眠)');
   SLidAllow: TStrMap = ('Suspend (system default)', '睡眠(系统默认)');
   SAcLidAwake: TStrMap = ('Stay awake (no sleep on close)', '保持运行(合盖不休眠)');
-  SBatClose: TStrMap = ('Sleep immediately (default)', '合盖立即睡眠(默认)');
+  SBatClose: TStrMap = ('Sleep on close (default)', '合盖睡眠(默认)');
+  SLidAcHeader: TStrMap = ('On power', '接电源');
+  SLidBatHeader: TStrMap = ('On battery', '用电池');
   SAutoStart: TStrMap = ('Run at Login', '开机自启');
   SLangTitle: TStrMap = ('Language', '语言 / Language');
   SLangAuto: TStrMap = ('Follow System', '跟随系统');
@@ -147,8 +149,9 @@ var
   LidTextBlock: TStrMap;   // Linux guard style: the "block" radio label
   LidTextAllow: TStrMap;   // Linux guard style: the "allow" radio label
   LidAcAwakeText: TStrMap; // per-source style: the AC checkbox label
-  LidBatTitle: TStrMap;    // per-source style: battery submenu title
   LidBatCloseText: TStrMap;
+  LidTextAcHeader: TStrMap;
+  LidTextBatHeader: TStrMap;
 
 // Language selection: explicit choice in the lang file wins, otherwise the
 // system UI language (zh-* -> Chinese).
@@ -459,7 +462,7 @@ end;
 
 function BuildTrayMenu(HasLid, HasSleepNow, LidPerSource: Boolean): PMenuNode;
 var
-  lid, lang, bat: PMenuNode;
+  lid, lang: PMenuNode;
   Fixed: TStrMap;
 begin
   Result := NewNode(mkSubmenu, maNone, SEmpty, 0);   // invisible root
@@ -472,17 +475,18 @@ begin
     lid := NewNode(mkSubmenu, maNone, LidTextTitle, 0);
     if LidPerSource then
     begin
-      // Per-source style (macOS): AC checkbox + battery submenu whose first
-      // radio is the system default (sleep on close).
-      AddChild(lid, NewNode(mkCheck, maAcLidAwake, LidAcAwakeText, 0));
+      // Per-source style (macOS): flat layout with gray section headers -
+      // AC toggle, then the battery lid timer radios (0 = sleep on close,
+      // the default). No nesting beyond the lid submenu itself.
+      AddChild(lid, NewNode(mkHeader, maNone, SLidAcHeader, 0));
+      AddChild(lid, NewNode(mkCheck, maAcLidAwake, SAcLidAwake, 0));
       AddChild(lid, NewNode(mkSep, maNone, SEmpty, 0));
-      bat := NewNode(mkSubmenu, maNone, LidBatTitle, 0);
-      AddChild(bat, NewNode(mkRadio, maBatClose, LidBatCloseText, RG_BAT));
-      AddChild(bat, NewNode(mkRadio, maBat5, SBat5, RG_BAT));
-      AddChild(bat, NewNode(mkRadio, maBat15, SBat15, RG_BAT));
-      AddChild(bat, NewNode(mkRadio, maBat30, SBat30, RG_BAT));
-      AddChild(bat, NewNode(mkRadio, maBat60, SBat60, RG_BAT));
-      AddChild(lid, bat);
+      AddChild(lid, NewNode(mkHeader, maNone, SLidBatHeader, 0));
+      AddChild(lid, NewNode(mkRadio, maBatClose, SBatClose, RG_BAT));
+      AddChild(lid, NewNode(mkRadio, maBat5, SBat5, RG_BAT));
+      AddChild(lid, NewNode(mkRadio, maBat15, SBat15, RG_BAT));
+      AddChild(lid, NewNode(mkRadio, maBat30, SBat30, RG_BAT));
+      AddChild(lid, NewNode(mkRadio, maBat60, SBat60, RG_BAT));
     end
     else
     begin
@@ -535,10 +539,10 @@ begin
                    else
                      Result := LidMode <> 'block';
     maAcLidAwake:  Result := LidAcAwake;
-    maBatClose:    Result := LidBatteryMinutes = 0;
     maLangAuto:    Result := (CurrentLangStored <> 'en') and (CurrentLangStored <> 'zh');
     maLangEn:      Result := CurrentLangStored = 'en';
     maLangZh:      Result := CurrentLangStored = 'zh';
+    maBatClose:    Result := LidBatteryMinutes = 0;
     maBat5:        Result := LidBatteryMinutes = 5;
     maBat15:       Result := LidBatteryMinutes = 15;
     maBat30:       Result := LidBatteryMinutes = 30;
@@ -675,7 +679,8 @@ initialization
   LidTextBlock := SLidBlock;
   LidTextAllow := SLidAllow;
   LidAcAwakeText := SAwake;          // replaced by platforms that use it
-  LidBatTitle := SBatTitle;
   LidBatCloseText := SBatClose;
+  LidTextAcHeader := SLidAcHeader;
+  LidTextBatHeader := SLidBatHeader;
 
 end.
