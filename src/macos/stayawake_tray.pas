@@ -158,10 +158,10 @@ type
   TAuthorizationFree = function(auth: Pointer; flags: cuint32): cint; cdecl;
 var
   SecHandle: TLibHandle;
+  gAuth: Pointer = nil;   // cached authorization ref: one password per run
   aCreate: TAuthorizationCreate;
   aExec: TAuthorizationExecuteWithPrivileges;
   aFree: TAuthorizationFree;
-  auth: Pointer = nil;
   argv: array of PAnsiChar;
   i: Integer;
   status: cint;
@@ -181,16 +181,26 @@ begin
     argv[i] := PAnsiChar(AnsiString(args[i]));
   argv[High(argv)] := nil;
 
-  if aCreate(nil, nil, kAuthorizationFlagDefaults, auth) <> 0 then
-    Exit;
-  try
-    // Pops the standard administrator-password dialog when needed.
-    status := aExec(auth, PAnsiChar(AnsiString(path)),
+  // gAuth is created once per app run and REUSED: after the first password
+  // the acquired right stays valid for this authorization ref, so later
+  // elevated operations (Sleep Now, lid mode switches) do not re-prompt.
+  // A denied status means the right expired - refresh the ref once.
+  if gAuth = nil then
+    if aCreate(nil, nil, kAuthorizationFlagDefaults, gAuth) <> 0 then
+      Exit;
+
+  status := aExec(gAuth, PAnsiChar(AnsiString(path)),
+    kAuthorizationFlagDefaults, PAnsiChar(@argv[0]), nil);
+  if status = errAuthorizationDenied then
+  begin
+    aFree(gAuth, kAuthorizationFlagDestroyRights);
+    gAuth := nil;
+    if aCreate(nil, nil, kAuthorizationFlagDefaults, gAuth) <> 0 then
+      Exit;
+    status := aExec(gAuth, PAnsiChar(AnsiString(path)),
       kAuthorizationFlagDefaults, PAnsiChar(@argv[0]), nil);
-    Result := status = 0;
-  finally
-    aFree(auth, kAuthorizationFlagDestroyRights);
   end;
+  Result := status = 0;
 end;
 
 procedure HookSleepNow; cdecl;
