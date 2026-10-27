@@ -178,9 +178,9 @@ begin
     (Bat^.Sub[0]^.Action = maBatClose) and (Bat^.Sub[1]^.Action = maBat5) and
     (Bat^.Sub[4]^.Action = maBat60) and (Bat^.Sub[0]^.RadioGroup = Bat^.Sub[4]^.RadioGroup));
   Check('D12f battery labels localized',
-    (Bat^.Sub[0]^.Text[tlZh] = '合盖睡眠(系统默认)') and
-    (Bat^.Sub[1]^.Text[tlZh] = '5 分钟后睡眠') and
-    (Bat^.Sub[4]^.Text[tlEn] = '60 min, then sleep'));
+    (Bat^.Sub[0]^.Text[tlZh] = '合盖立即睡眠(默认)') and
+    (Bat^.Sub[1]^.Text[tlZh] = '保持清醒 5 分钟后睡眠') and
+    (Bat^.Sub[4]^.Text[tlEn] = 'Stay awake 60 min, then sleep'));
   FreeTrayMenu(Root);
 end;
 
@@ -268,14 +268,15 @@ begin
   WriteConfigValue(LidBatteryMinutesPath, 'junk');
   Check('E17 junk minutes falls back to 0', LidBatteryMinutes = 0);
 
-  // AC lid checkbox (per-source style): file-based, toggle via dispatch
+  // AC lid checkbox (per-source style): file-based, toggle via dispatch.
+  // Missing file defaults to awake (product decision).
   ACPath := TrayConfigDir + '/stayawake/lid-ac';
-  WriteConfigValue(ACPath, 'default');
-  Check('E18 ac awake default off', not LidAcAwake);
+  DeleteFile(ACPath);
+  Check('E18 ac awake defaults on (no file)', LidAcAwake and MenuActionState(maAcLidAwake));
   MenuActionInvoke(maAcLidAwake);
-  Check('E19 ac awake toggled on', LidAcAwake and MenuActionState(maAcLidAwake));
+  Check('E19 toggled off', (not LidAcAwake) and not MenuActionState(maAcLidAwake));
   MenuActionInvoke(maAcLidAwake);
-  Check('E20 ac awake toggled off', (not LidAcAwake) and not MenuActionState(maAcLidAwake));
+  Check('E20 toggled back on', LidAcAwake and MenuActionState(maAcLidAwake));
 end;
 
 // ---- F. icon pixels ---------------------------------------------------------

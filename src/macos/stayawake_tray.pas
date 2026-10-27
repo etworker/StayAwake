@@ -621,7 +621,7 @@ begin
   TrayHooks.HasSleepNow := True;
   TrayHooks.LidPerSource := True;
 
-  LidTextTitle[tlEn] := 'Lid Close';                        LidTextTitle[tlZh] := '合盖行为';
+  LidTextTitle[tlEn] := 'When the lid is closed';           LidTextTitle[tlZh] := '合盖时';
   LidAcAwakeText[tlEn] := SAcLidAwake[tlEn];                LidAcAwakeText[tlZh] := SAcLidAwake[tlZh];
   LidBatTitle[tlEn] := SBatTitle[tlEn];                     LidBatTitle[tlZh] := SBatTitle[tlZh];
   LidBatCloseText[tlEn] := SBatClose[tlEn];                 LidBatCloseText[tlZh] := SBatClose[tlZh];

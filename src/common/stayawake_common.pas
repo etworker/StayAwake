@@ -113,17 +113,17 @@ const
   SLidTitle: TStrMap = ('Lid Close on AC Power', '合盖行为(接电源时)');
   SLidBlock: TStrMap = ('Do Nothing (Guard blocks sleep)', '不动作(守卫拦截睡眠)');
   SLidAllow: TStrMap = ('Suspend (system default)', '睡眠(系统默认)');
-  SAcLidAwake: TStrMap = ('Stay awake when the lid closes (AC)', '插电合盖保持唤醒');
-  SBatClose: TStrMap = ('Sleep on close (system default)', '合盖睡眠(系统默认)');
+  SAcLidAwake: TStrMap = ('Stay awake (no sleep on close)', '保持运行(合盖不休眠)');
+  SBatClose: TStrMap = ('Sleep immediately (default)', '合盖立即睡眠(默认)');
   SAutoStart: TStrMap = ('Run at Login', '开机自启');
   SLangTitle: TStrMap = ('Language', '语言 / Language');
   SLangAuto: TStrMap = ('Follow System', '跟随系统');
   SSleepNow: TStrMap = ('Sleep Now', '立即睡眠');
   SBatTitle: TStrMap = ('On Battery', '电池供电合盖');
-  SBat5: TStrMap   = ('5 min, then sleep', '5 分钟后睡眠');
-  SBat15: TStrMap  = ('15 min, then sleep', '15 分钟后睡眠');
-  SBat30: TStrMap  = ('30 min, then sleep', '30 分钟后睡眠');
-  SBat60: TStrMap  = ('60 min, then sleep', '60 分钟后睡眠');
+  SBat5: TStrMap   = ('Stay awake 5 min, then sleep', '保持清醒 5 分钟后睡眠');
+  SBat15: TStrMap  = ('Stay awake 15 min, then sleep', '保持清醒 15 分钟后睡眠');
+  SBat30: TStrMap  = ('Stay awake 30 min, then sleep', '保持清醒 30 分钟后睡眠');
+  SBat60: TStrMap  = ('Stay awake 60 min, then sleep', '保持清醒 60 分钟后睡眠');
   SAbout: TStrMap = ('About StayAwake', '关于 StayAwake');
   SQuit: TStrMap = ('Quit', '退出');
   STipWork: TStrMap = ('StayAwake - preventing sleep', 'StayAwake - 防睡中');
@@ -360,7 +360,9 @@ end;
 
 function LidAcAwake: Boolean;
 begin
-  Result := ReadConfigValue(LidAcAwakePath, 'default') = 'awake';
+  // Default ON: closing the lid keeps the machine running unless the user
+  // explicitly opts into the system default.
+  Result := ReadConfigValue(LidAcAwakePath, 'awake') = 'awake';
 end;
 
 procedure SetLidAcAwake(AAwake: Boolean);
