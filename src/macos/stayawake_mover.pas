@@ -67,6 +67,7 @@ type
   TCGGetOnlineDisplayList = function(maxDisplays: cuint32; displays: PCUInt;
     var onlineCount: cuint32): cint; cdecl;
   TCGDisplayIsBuiltin = function(display: cuint32): Boolean; cdecl;
+  TCGDisplayIsActive = function(display: cuint32): Boolean; cdecl;
 
 var
   CGHandle: TLibHandle;
@@ -93,6 +94,7 @@ var
   IOObjectRelease: TIOObjectRelease = nil;
   CGGetOnlineDisplayList: TCGGetOnlineDisplayList = nil;
   CGDisplayIsBuiltin: TCGDisplayIsBuiltin = nil;
+  CGDisplayIsActive: TCGDisplayIsActive = nil;
   gLastAppliedC: Integer = -1;   // last disablesleep value applied per source
   gLastAppliedB: Integer = -1;
   gClosedSince: TDateTime = 0;
@@ -119,6 +121,7 @@ begin
   CGFRelease := TCFRelease(GetProcAddress(CGHandle, 'CFRelease'));
   CGGetOnlineDisplayList := TCGGetOnlineDisplayList(GetProcAddress(CGHandle, 'CGGetOnlineDisplayList'));
   CGDisplayIsBuiltin := TCGDisplayIsBuiltin(GetProcAddress(CGHandle, 'CGDisplayIsBuiltin'));
+  CGDisplayIsActive := TCGDisplayIsActive(GetProcAddress(CGHandle, 'CGDisplayIsActive'));
 end;
 
 procedure NudgeMouse;
@@ -318,6 +321,60 @@ begin
   Result := builtin;
 end;
 
+function BuiltinDisplayLit: Boolean;
+var
+  ids: array[0..15] of cuint32;
+  n, i: cuint32;
+  lit: Boolean;
+begin
+  // Built-in panel present AND lit = lid open. The panel drops off the
+  // lit list the instant the lid closes (display powers down even while
+  // the system stays awake), so this is a zero-lag lid signal.
+  Result := True;   // uncertain -> treat as lit/lid-open (fail open)
+  if (CGGetOnlineDisplayList = nil) or (CGDisplayIsBuiltin = nil) or
+     (CGDisplayIsActive = nil) then
+    Exit;
+  n := 0;
+  if CGGetOnlineDisplayList(Length(ids), @ids[0], n) <> 0 then
+    Exit;
+  lit := False;
+  for i := 0 to n - 1 do
+    if CGDisplayIsBuiltin(ids[i]) and CGDisplayIsActive(ids[i]) then
+    begin
+      lit := True;
+      Break;
+    end;
+  Result := lit;
+end;
+
+// The lid state from powerd itself: AppleClamshellState in the
+// IOPMrootDomain registry. Verified on-device (Apple Silicon, 2026-10):
+// it flips true/false with the lid even while pmset disablesleep is
+// armed, and it updates before the sleep request - the reliable signal.
+function AppleClamshellClosed: Boolean;
+var
+  svc, prop: Pointer;
+  key: CFStringRef;
+begin
+  Result := False;
+  if (IOServiceGetMatchingService = nil) or (IOServiceMatching = nil) or
+     (IORegistryEntryCreateCFProperty = nil) or (IOObjectRelease = nil) then
+    Exit;
+  svc := IOServiceGetMatchingService(nil, IOServiceMatching('IOPMrootDomain'));
+  if svc = nil then
+    Exit;
+  key := CFStringCreateWithCString(nil, PAnsiChar('AppleClamshellState'),
+    kCFStringEncodingUTF8);
+  prop := IORegistryEntryCreateCFProperty(svc, key, nil, 0);
+  if prop <> nil then
+  begin
+    Result := prop = Pointer(kCFBooleanTrue);
+    CFRelease(prop);
+  end;
+  CFRelease(key);
+  IOObjectRelease(svc);
+end;
+
 procedure LidPolicyApply;
 var
   acAwake: Boolean;
@@ -327,7 +384,7 @@ var
 begin
   acAwake := LidAcAwake;
   mins := LidBatteryMinutes;
-  lidClosed := not BuiltinDisplayOnline;
+  lidClosed := not BuiltinDisplayLit;
   if lidClosed and (not gWasClosed) then
   begin
     gClosedSince := Now;
