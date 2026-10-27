@@ -114,8 +114,8 @@ const
   SLidAllow: TStrMap = ('Suspend (system default)', '睡眠(系统默认)');
   SAcLidAwake: TStrMap = ('Stay awake (no sleep on close)', '保持运行(合盖不休眠)');
   SBatClose: TStrMap = ('Sleep on close (default)', '合盖睡眠(默认)');
-  SLidAcHeader: TStrMap = ('On power', '接电源');
-  SLidBatHeader: TStrMap = ('On battery', '用电池');
+  SLidAcHeader: TStrMap = ('[On power]', '[接电源]');
+  SLidBatHeader: TStrMap = ('[On battery]', '[用电池]');
   SAutoStart: TStrMap = ('Run at Login', '开机自启');
   SLangTitle: TStrMap = ('Language', '语言 / Language');
   SLangAuto: TStrMap = ('Follow System', '跟随系统');
