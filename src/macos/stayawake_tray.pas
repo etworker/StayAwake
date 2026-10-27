@@ -49,6 +49,8 @@ const
   SEnableCmd = 'sudo pmset -a disablesleep 1';
   SDisableCmd = 'sudo pmset -a disablesleep 0';
 function HookLidState: Boolean; cdecl; forward;
+function PmsetSleepDisabled: Boolean; forward;
+procedure ShowLidGuideDialog(ABlock: Boolean); forward;
 procedure HookLidRequest(ABlock: Boolean); cdecl; forward;
 
 // ---- libc helpers -----------------------------------------------------------
@@ -141,12 +143,79 @@ begin
   UpdateExecutionState;
 end;
 
+// Run a shell command as root through the standard macOS authorization
+// dialog. True = the command executed.
+function RunRootCommand(const path: string; const args: array of string): Boolean;
+const
+  kAuthorizationFlagDefaults = 0;
+  kAuthorizationFlagDestroyRights = 8;
+  errAuthorizationCanceled = -60005;
+type
+  TAuthorizationCreate = function(rights: Pointer; environment: Pointer;
+    flags: cuint32; var auth: Pointer): cint; cdecl;
+  TAuthorizationExecuteWithPrivileges = function(auth: Pointer; path: PAnsiChar;
+    flags: cuint32; args: PAnsiChar; pipe: Pointer): cint; cdecl;
+  TAuthorizationFree = function(auth: Pointer; flags: cuint32): cint; cdecl;
+var
+  SecHandle: TLibHandle;
+  aCreate: TAuthorizationCreate;
+  aExec: TAuthorizationExecuteWithPrivileges;
+  aFree: TAuthorizationFree;
+  auth: Pointer = nil;
+  argv: array of PAnsiChar;
+  i: Integer;
+  status: cint;
+begin
+  Result := False;
+  SecHandle := LoadLibrary('/System/Library/Frameworks/Security.framework/Security');
+  if SecHandle = NilHandle then
+    Exit;
+  Pointer(aCreate) := GetProcAddress(SecHandle, 'AuthorizationCreate');
+  Pointer(aExec) := GetProcAddress(SecHandle, 'AuthorizationExecuteWithPrivileges');
+  Pointer(aFree) := GetProcAddress(SecHandle, 'AuthorizationFree');
+  if (aCreate = nil) or (aExec = nil) or (aFree = nil) then
+    Exit;
+
+  SetLength(argv, Length(args) + 1);
+  for i := 0 to High(args) do
+    argv[i] := PAnsiChar(AnsiString(args[i]));
+  argv[High(argv)] := nil;
+
+  if aCreate(nil, nil, kAuthorizationFlagDefaults, auth) <> 0 then
+    Exit;
+  try
+    // Pops the standard administrator-password dialog when needed.
+    status := aExec(auth, PAnsiChar(AnsiString(path)),
+      kAuthorizationFlagDefaults, PAnsiChar(@argv[0]), nil);
+    Result := status = 0;
+  finally
+    aFree(auth, kAuthorizationFlagDestroyRights);
+  end;
+end;
+
 procedure HookSleepNow; cdecl;
 begin
-  // `pmset sleepnow` needs no root and still works while SleepDisabled=1 is
-  // set (verified on-device: "Software Sleep pid=..." entry) - which is what
-  // makes the disablesleep-based lid guard viable at all.
-  system('/usr/bin/pmset sleepnow');
+  if not PmsetSleepDisabled then
+  begin
+    // Guard off: plain rootless sleep.
+    system('/usr/bin/pmset sleepnow');
+    Exit;
+  end;
+  // Guard on: disablesleep blocks every sleep request, including this one,
+  // so run one elevated command that lifts the guard, sleeps, and re-arms
+  // ~20 s after the machine wakes (the root shell is frozen while asleep,
+  // so the 20 s count effectively resumes on wake). One password, guard
+  // restored automatically.
+  PowerLog('SleepNow with guard on: lifting via authorization dialog');
+  if RunRootCommand('/bin/sh', ['-c',
+      '/usr/bin/pmset -a disablesleep 0; /usr/bin/pmset sleepnow; sleep 20; /usr/bin/pmset -a disablesleep 1'])
+  then
+    PowerLog('SleepNow cycle dispatched')
+  else
+  begin
+    PowerLog('SleepNow authorization canceled/failed');
+    ShowLidGuideDialog(True);   // fallback: the clipboard guide
+  end;
 end;
 
 // ---- Lid close (macOS): guided one-time admin command -----------------------
@@ -154,6 +223,28 @@ end;
 // any power source). It needs elevation once; the menu drives it through the
 // clipboard-guide dialog. The tray radio reflects the REAL pmset state
 // (SleepDisabled flag in `pmset -g`).
+
+function PmsetSleepDisabled: Boolean;
+var
+  outp, line: string;
+  i, start: Integer;
+begin
+  // The flag shows up in `pmset -g` as a tab-separated "SleepDisabled 1"
+  // line. It does NOT appear in `pmset -g custom` on current macOS (verified
+  // on a machine with the setting active), which the first version parsed.
+  Result := False;
+  outp := LowerCase(PopenRead('/usr/bin/pmset -g 2>/dev/null'));
+  i := Pos('sleepdisabled', outp);
+  if i = 0 then
+    Exit;
+  start := i + Length('sleepdisabled');
+  line := Copy(outp, start, Length(outp));
+  i := Pos(#10, line);
+  if i > 0 then
+    line := Copy(line, 1, i - 1);
+  line := Trim(line);
+  Result := (line <> '') and (line[1] = '1');
+end;
 
 function HookLidState: Boolean; cdecl;
 var
