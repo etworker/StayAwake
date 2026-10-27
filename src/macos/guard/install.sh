@@ -20,7 +20,7 @@ set -e
 USER_NAME="${SUDO_USER:-$(stat -f %Su /dev/console)}"
 ENT="/etc/sudoers.d/stayawake"
 
-printf '%s ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 1, /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset sleepnow\n' \
+printf '%s ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 1, /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -c disablesleep 1, /usr/bin/pmset -c disablesleep 0, /usr/bin/pmset -b disablesleep 1, /usr/bin/pmset -b disablesleep 0, /usr/bin/pmset sleepnow\n' \
   "$USER_NAME" > "$ENT.tmp"
 chmod 0440 "$ENT.tmp"
 # Validate before installing: a broken sudoers file would break sudo itself.

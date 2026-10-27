@@ -220,6 +220,13 @@ begin
   Result := status = 0;
 end;
 
+// Called when the lid mode changes: apply the per-source disablesleep
+// right away instead of waiting for the next mover tick.
+procedure HookApplyLidMode; cdecl;
+begin
+  LidPolicyApply;
+end;
+
 procedure HookSleepNow; cdecl;
 begin
   if not PmsetSleepDisabled then
@@ -685,14 +692,14 @@ begin
   // No lid-close blocking on macOS: exhaustively verified that userspace
   // cannot veto clamshell sleep (assertions ignored; IOCancelPowerChange
   // only delays ~5 s; pmset disablesleep would also kill the Sleep menu).
-  // See docs/02-design.md for the evidence trail. The menu instead offers
-  // "Sleep Now" (`pmset sleepnow`), which works regardless of that setting.
-  // The lid submenu IS available on macOS - via the guided one-time admin
-  // command (`pmset disablesleep`). Verified exhaustively that this is the
-  // only mechanism that blocks clamshell sleep while keeping everything
-  // else intact; manual sleep goes through the menu's "Sleep Now".
-  TrayHooks.HasLid := True;
+  // The lid submenu IS available on macOS - the policy engine (mover)
+  // applies per-power-source disablesleep via the passwordless sudoers
+  // whitelist (guard/install.sh). Apple Silicon only: Intel enforces
+  // clamshell sleep at the SMC layer where nothing helps.
+  TrayHooks.HasLid := Pos('arm64',
+    LowerCase(PopenRead('/usr/bin/uname -m 2>/dev/null'))) > 0;
   TrayHooks.HasSleepNow := True;
+  TrayHooks.LidBatteryTimer := True;
 
   LidTextTitle[tlEn] := 'Lid Close';                        LidTextTitle[tlZh] := '合盖行为';
   LidTextBlock[tlEn] := 'Stay awake when closed';           LidTextBlock[tlZh] := '保持唤醒(合盖不睡眠)';
@@ -700,7 +707,7 @@ begin
 
   TrayHooks.RefreshVisual := @HookRefreshVisual;
   TrayHooks.ApplyAwake := @HookApplyAwake;
-  TrayHooks.ApplyLidMode := nil;
+  TrayHooks.ApplyLidMode := @HookApplyLidMode;
   TrayHooks.ApplyLanguage := @HookApplyLanguage;
   TrayHooks.ShowAbout := @HookShowAbout;
   TrayHooks.Quit := @HookQuit;
@@ -733,7 +740,7 @@ begin
     img.release;
   end;
 
-  MenuRoot := BuildTrayMenu(TrayHooks.HasLid, TrayHooks.HasSleepNow);
+  MenuRoot := BuildTrayMenu(TrayHooks.HasLid, TrayHooks.HasSleepNow, TrayHooks.LidBatteryTimer);
   menu := NSMenu.alloc.initWithTitle(NSString.stringWithUTF8String('StayAwake'));
   FillMenu(menu, MenuRoot);
 

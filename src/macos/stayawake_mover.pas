@@ -11,12 +11,17 @@ procedure StartMoverThread;
 procedure UpdateExecutionState;
 procedure OnSystemSleep;
 procedure OnSystemWake;
+// Re-evaluates the per-power-source disablesleep policy (block mode:
+// AC closed stays awake; battery closed stays awake for the configured
+// minutes then sleeps). Called on every mover tick and on mode changes.
+procedure LidPolicyApply;
 
 implementation
 
 uses
   Classes,
   SysUtils,
+  DateUtils,
   dynlibs,
   ctypes,
   MacOSAll;
@@ -53,9 +58,19 @@ type
   TIOPMAssertionCreateWithName = function(AssertionType: CFStringRef;
     AssertionLevel: cint; Reason: CFStringRef; var AssertionID: cuint32): cint; cdecl;
   TIOPMAssertionRelease = function(AssertionID: cuint32): cint; cdecl;
+  TIOServiceGetMatchingService = function(mainPort: Pointer;
+    matching: Pointer): Pointer; cdecl;
+  TIOServiceMatching = function(name: PAnsiChar): Pointer; cdecl;
+  TIORegistryEntryCreateCFProperty = function(entry: Pointer; key: CFStringRef;
+    allocator: Pointer; options: cuint32): Pointer; cdecl;
+  TIOObjectRelease = function(obj: Pointer): cint; cdecl;
+  TCGGetOnlineDisplayList = function(maxDisplays: cuint32; displays: PCUInt;
+    var onlineCount: cuint32): cint; cdecl;
+  TCGDisplayIsBuiltin = function(display: cuint32): Boolean; cdecl;
 
 var
   CGHandle: TLibHandle;
+  CGDisp: TLibHandle = NilHandle;
   CGEventCreate: TCGEventCreate;
   CGEventGetLocation: TCGEventGetLocation;
   CGEventCreateMouseEvent: TCGEventCreateMouseEvent;
@@ -71,6 +86,18 @@ var
   gAssertionID: cuint32 = 0;
   gAssertionOn: Boolean = False;
   gSleepCoop: Boolean = False;   // released for an allowed system sleep; re-arm on wake
+  // Lid policy state
+  IOServiceGetMatchingService: TIOServiceGetMatchingService = nil;
+  IOServiceMatching: TIOServiceMatching = nil;
+  IORegistryEntryCreateCFProperty: TIORegistryEntryCreateCFProperty = nil;
+  IOObjectRelease: TIOObjectRelease = nil;
+  CGGetOnlineDisplayList: TCGGetOnlineDisplayList = nil;
+  CGDisplayIsBuiltin: TCGDisplayIsBuiltin = nil;
+  gLastAppliedC: Integer = -1;   // last disablesleep value applied per source
+  gLastAppliedB: Integer = -1;
+  gClamSince: TDateTime = 0;
+  gWasClam: Boolean = False;
+  gBatSleepSent: Boolean = False;
 
 procedure InitCoreGraphics;
 begin
@@ -144,6 +171,80 @@ begin
     GetProcAddress(PMHandle, 'IOPMAssertionRelease'));
 end;
 
+function popen(cmd: PAnsiChar; mode: PAnsiChar): Pointer; cdecl; external 'c' name 'popen';
+function pclose(stream: Pointer): cint; cdecl; external 'c' name 'pclose';
+function fgets(buf: PAnsiChar; size: cint; stream: Pointer): PAnsiChar; cdecl; external 'c' name 'fgets';
+function system(cmd: PAnsiChar): cint; cdecl; external 'c' name 'system';
+
+function PopenRead(const cmd: string): string;
+const
+  ReadBufSize = 512;
+var
+  f: Pointer;
+  buf: array[0..ReadBufSize - 1] of AnsiChar;
+  ln: PAnsiChar;
+begin
+  Result := '';
+  f := popen(PAnsiChar(cmd), PAnsiChar('r'));
+  if f = nil then
+    Exit;
+  try
+    repeat
+      ln := fgets(buf, ReadBufSize, f);
+      if ln <> nil then
+        Result := Result + string(ln);
+    until ln = nil;
+  finally
+    pclose(f);
+  end;
+end;
+
+procedure RunPmset(const args: string);
+begin
+  // Passwordless via the scoped sudoers entry installed by
+  // src/macos/guard/install.sh; sudo -n fails silently when missing, in
+  // which case the setting simply is not applied this round.
+  PowerLog('pmset ' + args);
+  system(PAnsiChar(AnsiString('/usr/bin/sudo -n /usr/bin/pmset ' + args + ' 2>/dev/null')));
+end;
+
+// powerd's own clamshell flag from the IOPMrootDomain registry - the
+// authoritative lid state, updated before any sleep request.
+function AppleClamshellClosed: Boolean;
+var
+  svc, prop: Pointer;
+  key: CFStringRef;
+begin
+  Result := False;
+  if (IOServiceGetMatchingService = nil) or (IOServiceMatching = nil) or
+     (IORegistryEntryCreateCFProperty = nil) or (IOObjectRelease = nil) then
+    Exit;
+  svc := IOServiceGetMatchingService(nil, IOServiceMatching('IOPMrootDomain'));
+  if svc = nil then
+    Exit;
+  key := CFStringCreateWithCString(nil, PAnsiChar('AppleClamshellState'),
+    kCFStringEncodingUTF8);
+  prop := IORegistryEntryCreateCFProperty(svc, key, nil, 0);
+  if prop <> nil then
+  begin
+    Result := prop = CFTypeRef(kCFBooleanTrue);
+    CFRelease(prop);
+  end;
+  CFRelease(key);
+  IOObjectRelease(svc);
+end;
+
+// True when running on AC power (parses `pmset -g batt`); fails open to
+// False = treated as battery (conservative).
+function OnACPower: Boolean;
+var
+  outp: string;
+begin
+  Result := False;
+  outp := PopenRead('/usr/bin/pmset -g batt 2>/dev/null');
+  Result := Pos('AC Power', outp) > 0;
+end;
+
 // Tell macOS we are actively presenting so idle sleep / display sleep is
 // suppressed while AppActive. IOPMAssertions are process-global, so the
 // tray thread can create/release them directly.
@@ -210,6 +311,76 @@ begin
   end;
 end;
 
+// ---- Lid policy (per power source) -------------------------------------------
+// block mode: AC closed -> stay awake indefinitely; battery closed -> stay
+// awake for LidBatteryMinutes then sleep (and stay asleep). Disablesleep is
+// applied per source via the passwordless sudoers whitelist; the sleep at
+// timer expiry is `pmset sleepnow` (global, but the machine is on battery
+// at that point).
+procedure LidPolicyApply;
+var
+  mode: string;
+  mins, elapsed: Integer;
+  clam, onAC: Boolean;
+  wantC, wantB: Integer;
+begin
+  if (IOServiceGetMatchingService = nil) or (CGGetOnlineDisplayList = nil) then
+    Exit;
+  mode := LidMode;
+  mins := LidBatteryMinutes;
+  clam := AppleClamshellClosed;
+  if clam and (not gWasClam) then
+  begin
+    gClamSince := Now;
+    gBatSleepSent := False;
+  end;
+  if not clam then
+  begin
+    gClamSince := 0;
+    gBatSleepSent := False;
+  end;
+  gWasClam := clam;
+  onAC := OnACPower;
+
+  wantC := 0;
+  wantB := 0;
+  if mode = 'block' then
+  begin
+    wantC := 1;
+    wantB := 1;
+    if clam and (not onAC) then
+    begin
+      if gClamSince <> 0 then
+        elapsed := MinutesBetween(Now, gClamSince)
+      else
+        elapsed := 0;
+      if elapsed >= mins then
+      begin
+        // Timer expired: allow sleep on battery and put it to sleep now.
+        wantB := 0;
+        if not gBatSleepSent then
+        begin
+          RunPmset('-b disablesleep 0');
+          RunPmset('sleepnow');
+          gBatSleepSent := True;
+          PowerLog('battery lid timer expired: sleeping now');
+        end;
+      end;
+    end;
+  end;
+
+  if wantC <> gLastAppliedC then
+  begin
+    RunPmset(Format('-c disablesleep %d', [wantC]));
+    gLastAppliedC := wantC;
+  end;
+  if wantB <> gLastAppliedB then
+  begin
+    RunPmset(Format('-b disablesleep %d', [wantB]));
+    gLastAppliedB := wantB;
+  end;
+end;
+
 type
   TMoverThread = class(TThread)
   protected
@@ -223,6 +394,8 @@ begin
     Sleep(INTERVAL_SECS * 1000);
     if AppActive and (not Terminated) then
       NudgeMouse;
+    if not Terminated then
+      LidPolicyApply;
   end;
 end;
 
@@ -231,6 +404,7 @@ begin
   InitCoreGraphics;
   InitPowerManagement;
   UpdateExecutionState;
+  LidPolicyApply;
   with TMoverThread.Create(False) do
     FreeOnTerminate := True;
 end;

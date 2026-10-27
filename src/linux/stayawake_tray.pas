@@ -347,7 +347,7 @@ begin
   gtk_status_icon_set_visible(StatusIcon, TRUE);
   gtk_status_icon_set_tooltip(StatusIcon, 'StayAwake');
 
-  MenuRoot := BuildTrayMenu(TrayHooks.HasLid, TrayHooks.HasSleepNow);
+  MenuRoot := BuildTrayMenu(TrayHooks.HasLid, TrayHooks.HasSleepNow, False);
   TrayMenu := gtk_menu_new;
   FillMenu(TrayMenu, MenuRoot);
 

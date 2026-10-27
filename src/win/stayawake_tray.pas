@@ -346,7 +346,7 @@ begin
       );
   ShowWindow(TrayHwnd, SW_HIDE);
 
-  MenuRoot := BuildTrayMenu(TrayHooks.HasLid, TrayHooks.HasSleepNow);
+  MenuRoot := BuildTrayMenu(TrayHooks.HasLid, TrayHooks.HasSleepNow, False);
   TrayMenu := CreatePopupMenu;
   FillMenu(TrayMenu, MenuRoot);
 

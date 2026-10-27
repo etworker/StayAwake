@@ -125,12 +125,12 @@ end;
 
 procedure TestMenuTree;
 var
-  Root, Lid, Lang: PMenuNode;
+  Root, Lid, Lang, Bat: PMenuNode;
   i: Integer;
 begin
   ResetConfig;
 
-  Root := BuildTrayMenu(True, False);
+  Root := BuildTrayMenu(True, False, False);
   Check('D1 lid tree (no sleepnow) has 10 top nodes', CountChildren(Root) = 10);
   Check('D2 first is checkable awake row',
     (Root^.Sub[0]^.Kind = mkCheck) and (Root^.Sub[0]^.Action = maToggleAwake));
@@ -147,7 +147,7 @@ begin
   Check('D8 quit is last', Root^.Sub[9]^.Action = maQuit);
   FreeTrayMenu(Root);
 
-  Root := BuildTrayMenu(False, False);
+  Root := BuildTrayMenu(False, False, False);
   Check('D9 no-lid tree (no sleepnow) has 9 top nodes', CountChildren(Root) = 9);
   Check('D10 no lid submenu anywhere',
     (Root^.Sub[2]^.Action = maAutostart) and (Root^.Sub[2]^.Kind = mkCheck));
@@ -156,13 +156,27 @@ begin
   Check('D11 double free safe', Root = nil);
 
   // macOS-style tree: lid off, Sleep Now on (item + its separator appended)
-  Root := BuildTrayMenu(False, True);
+  Root := BuildTrayMenu(False, True, False);
   Check('D12 sleepnow tree has 11 top nodes', CountChildren(Root) = 11);
   Check('D13 sleepnow item placed before the About group',
     (Root^.Sub[5]^.Kind = mkItem) and (Root^.Sub[5]^.Action = maSleepNow) and
     (Root^.Sub[6]^.Kind = mkSep) and (Root^.Sub[8]^.Action = maAbout));
   Check('D14 sleepnow label', (Root^.Sub[5]^.Text[tlEn] = SSleepNow[tlEn]) and
     (Root^.Sub[5]^.Text[tlZh] = SSleepNow[tlZh]));
+  FreeTrayMenu(Root);
+
+  // macOS-style tree with the lid battery timer group
+  Root := BuildTrayMenu(True, True, True);
+  Check('D12b full mac tree has 12 top nodes', CountChildren(Root) = 12);
+  Lid := Root^.Sub[2];
+  Check('D12c lid submenu has block/allow/sep/bat = 4 children', CountChildren(Lid) = 4);
+  Bat := Lid^.Sub[3];
+  Check('D12d battery submenu is a group of 4 radios',
+    (Bat^.Kind = mkSubmenu) and (CountChildren(Bat) = 4) and
+    (Bat^.Sub[0]^.Action = maBat5) and (Bat^.Sub[3]^.Action = maBat60) and
+    (Bat^.Sub[0]^.RadioGroup = Bat^.Sub[3]^.RadioGroup));
+  Check('D12e battery labels localized',
+    (Bat^.Sub[0]^.Text[tlZh] = '5 分钟后睡眠') and (Bat^.Sub[3]^.Text[tlEn] = '60 min, then sleep'));
   FreeTrayMenu(Root);
 end;
 
@@ -234,6 +248,17 @@ begin
   MenuActionInvoke(maAbout);
   MenuActionInvoke(maQuit);
   Check('E14 nil-hook about/quit safe', True);
+
+  // battery timer minutes: dispatch persists, state reads back
+  WriteConfigValue(LidBatteryMinutesPath, '30');
+  WriteLn('DEBUG E15: file=[', ReadConfigValue(LidBatteryMinutesPath, 'X'), '] mins=', LidBatteryMinutes,
+    ' st30=', MenuActionState(maBat30), ' st15=', MenuActionState(maBat15));
+  Check('E15 bat radio state 30', MenuActionState(maBat30) and
+    not MenuActionState(maBat15) and not MenuActionState(maBat60) and not MenuActionState(maBat5));
+  MenuActionInvoke(maBat60);
+  Check('E16 bat 60 persisted', Trim(ReadConfigValue(LidBatteryMinutesPath, '')) = '60');
+  WriteConfigValue(LidBatteryMinutesPath, 'junk');
+  Check('E17 junk minutes falls back to 15', LidBatteryMinutes = 15);
 end;
 
 // ---- F. icon pixels ---------------------------------------------------------
