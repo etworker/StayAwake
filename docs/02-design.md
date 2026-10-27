@@ -56,15 +56,20 @@
 - 守卫进程在**插电**时持有 logind inhibitor 锁拦截合盖睡眠；电源状态直接读内核 `/sys`，因此免疫 GNOME/UPower 的电源误判（实测修复过 XPS 13 + Ubuntu 22.04 上「插着电却被按电池策略合盖睡眠」的案例）；
 - 切到「不动作」时托盘调用 `systemctl --user enable --now` 自愈拉起服务；电池合盖始终系统默认。
 
-### macOS：不支持（用户态无解，已实测穷尽）
+### macOS：pmset disablesleep + 应用菜单「立即睡眠」
 
-三类机制在同一台 Apple Silicon 实机上逐一验证，全部无法拦截合盖睡眠：
+三类机制在同一台 Apple Silicon 实机上逐一验证：
 
-1. **电源断言**：持有 IOKit `PreventSystemSleep` 时合盖仍进入 Clamshell Sleep；
-2. **睡眠协商取消**：读 IORegistry 的 `AppleClamshellState`（powerd 自己的合盖标志，判定精准）并应答 `IOCancelPowerChange`——powerd 仅将睡眠**延迟约 5 秒**后照常执行，且不再重新询问应用；
-3. **`pmset disablesleep`**：能拦合盖，但会**连 Apple 菜单「睡眠」一并禁用**，违背「手动睡眠必须可用」的硬性要求。
+1. **电源断言**：持有 IOKit `PreventSystemSleep` 时合盖仍进入 Clamshell Sleep——无效；
+2. **睡眠协商取消**：读 IORegistry 的 `AppleClamshellState`（powerd 自己的合盖标志，判定精准）并应答 `IOCancelPowerChange`——powerd 仅将睡眠**延迟约 5 秒**后照常执行，且不再重新询问应用——无效；
+3. **`pmset disablesleep`**：**有效**，但会连 Apple 菜单「睡眠」一并禁用。
 
-结论：在当前 macOS 上「合盖拦截」与「系统菜单睡眠可用」互斥，按需求优先级取舍——**保菜单睡眠**，macOS 不提供合盖菜单（与 Windows 一致）。应用保留了睡眠协商的**配合**逻辑：菜单「睡眠」/电源键触发时立即应答放行并释放防睡断言（唤醒后自动重建），实测无任何延迟。Intel 构建同样不显示。
+**最终方案（用户确认）**：接受第 3 项的代价，睡眠入口改由应用提供——
+
+- 合盖子菜单（macOS）切换 `disablesleep`：「保持唤醒(合盖不睡眠)」/「系统默认(合盖睡眠)」，勾选直接反映 pmset 真实状态（`pmset -g` 的 `SleepDisabled` 标志，经 libc `popen` 读取）；
+- 点选与真实状态不符的一侧时弹出引导对话框，给出一次性命令（`sudo pmset -a disablesleep 1` / `... 0`）并自动复制到剪贴板；
+- **菜单新增「立即睡眠」**：`pmset sleepnow`（免 root，实测在 `disablesleep 1` 下依然生效，日志 `Software Sleep pid=…` 为证）——系统菜单「睡眠」失效后，这就是休眠入口；
+- 睡眠协商（配合逻辑）保留：显式睡眠（含 `sleepnow`）发生时立即应答放行并释放防睡断言，唤醒后自动重建（实测 4ms 应答、无超时记录）。
 
 ### Windows：不提供
 

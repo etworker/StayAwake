@@ -53,6 +53,7 @@ type
     maLangAuto,
     maLangEn,
     maLangZh,
+    maSleepNow,
     maAbout,
     maQuit
   );
@@ -70,6 +71,7 @@ type
 
   TTrayHooks = record
     HasLid: Boolean;                 // False on Windows (no lid feature)
+    HasSleepNow: Boolean;            // macOS only: pmset sleepnow is rootless
     RefreshVisual: procedure; cdecl; // icon + tooltip + menu state re-sync
     ApplyAwake: procedure; cdecl;    // AppActive just changed: update assertions/nudge
     ApplyLidMode: procedure; cdecl;  // lid-mode file just changed: apply guard (Linux)
@@ -81,6 +83,7 @@ type
     // are routed to LidRequest instead of writing the file.
     LidState: function: Boolean; cdecl;             // True = "block" effective
     LidRequest: procedure(ABlock: Boolean); cdecl;  // user picked a lid radio
+    SleepNow: procedure; cdecl;                     // user picked Sleep Now
   end;
 
 var
@@ -105,6 +108,7 @@ const
   SAutoStart: TStrMap = ('Run at Login', '开机自启');
   SLangTitle: TStrMap = ('Language', '语言 / Language');
   SLangAuto: TStrMap = ('Follow System', '跟随系统');
+  SSleepNow: TStrMap = ('Sleep Now', '立即睡眠');
   SAbout: TStrMap = ('About StayAwake', '关于 StayAwake');
   SQuit: TStrMap = ('Quit', '退出');
   STipWork: TStrMap = ('StayAwake - preventing sleep', 'StayAwake - 防睡中');
@@ -115,6 +119,15 @@ const
 // Paths of the two per-user settings files (derived from TrayConfigDir).
 function LangFilePath: string;
 function LidFilePath: string;
+
+// Lid submenu labels. Initialized from SLid* (Linux semantics: AC-only
+// guard); a platform may override before the tray starts when its lid
+// mechanism means something else (macOS: disablesleep keeps awake on any
+// power source, so "AC Power" would be wrong).
+var
+  LidTextTitle: TStrMap;
+  LidTextBlock: TStrMap;
+  LidTextAllow: TStrMap;
 
 // Language selection: explicit choice in the lang file wins, otherwise the
 // system UI language (zh-* -> Chinese).
@@ -128,7 +141,7 @@ function LidMode: string;
 procedure SetLidMode(AMode: string);
 
 // The one menu definition. Callers own the returned tree (FreeTrayMenu).
-function BuildTrayMenu(HasLid: Boolean): PMenuNode;
+function BuildTrayMenu(HasLid, HasSleepNow: Boolean): PMenuNode;
 procedure FreeTrayMenu(var Root: PMenuNode);
 
 // Checked/radio state of an action, as the renderer should display it.
@@ -379,7 +392,7 @@ begin
   N := nil;
 end;
 
-function BuildTrayMenu(HasLid: Boolean): PMenuNode;
+function BuildTrayMenu(HasLid, HasSleepNow: Boolean): PMenuNode;
 var
   lid, lang: PMenuNode;
   Fixed: TStrMap;
@@ -391,9 +404,9 @@ begin
 
   if HasLid then
   begin
-    lid := NewNode(mkSubmenu, maNone, SLidTitle, 0);
-    AddChild(lid, NewNode(mkRadio, maLidBlock, SLidBlock, RG_LID));
-    AddChild(lid, NewNode(mkRadio, maLidAllow, SLidAllow, RG_LID));
+    lid := NewNode(mkSubmenu, maNone, LidTextTitle, 0);
+    AddChild(lid, NewNode(mkRadio, maLidBlock, LidTextBlock, RG_LID));
+    AddChild(lid, NewNode(mkRadio, maLidAllow, LidTextAllow, RG_LID));
     AddChild(Result, lid);
   end;
 
@@ -407,6 +420,12 @@ begin
   Fixed[tlEn] := SLangZh;  Fixed[tlZh] := SLangZh;
   AddChild(lang, NewNode(mkRadio, maLangZh, Fixed, RG_LANG));
   AddChild(Result, lang);
+
+  if HasSleepNow then
+  begin
+    AddChild(Result, NewNode(mkItem, maSleepNow, SSleepNow, 0));
+    AddChild(Result, NewNode(mkSep, maNone, SEmpty, 0));
+  end;
 
   AddChild(Result, NewNode(mkSep, maNone, SEmpty, 0));
   AddChild(Result, NewNode(mkItem, maAbout, SAbout, 0));
@@ -473,6 +492,7 @@ begin
     maLangAuto:  ApplyLanguage('');
     maLangEn:    ApplyLanguage('en');
     maLangZh:    ApplyLanguage('zh');
+    maSleepNow:  if Assigned(TrayHooks.SleepNow) then TrayHooks.SleepNow;
     maAbout:     if Assigned(TrayHooks.ShowAbout) then TrayHooks.ShowAbout;
     maQuit:      if Assigned(TrayHooks.Quit) then TrayHooks.Quit;
   end;
@@ -539,5 +559,10 @@ begin
     sl.Free;
   end;
 end;
+
+initialization
+  LidTextTitle := SLidTitle;
+  LidTextBlock := SLidBlock;
+  LidTextAllow := SLidAllow;
 
 end.

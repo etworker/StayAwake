@@ -18,16 +18,11 @@ uses
   CocoaAll,
   MacOSAll;
 
-// libc stdio for capturing `pmset -g custom` output (avoids a TProcess
-// dependency; libc is always linked on darwin).
-function popen(cmd: PAnsiChar; mode: PAnsiChar): Pointer; cdecl; external 'c' name 'popen';
-function pclose(stream: Pointer): cint; cdecl; external 'c' name 'pclose';
-function fgets(buf: PAnsiChar; size: cint; stream: Pointer): PAnsiChar; cdecl; external 'c' name 'fgets';
-
 // Platform renderer for the shared tray core (stayawake_common): it binds the
 // declarative menu tree to NSStatusItem/NSMenu and implements the platform
-// hooks (assertions, quit, about). All strings, menu structure, state queries
-// and click dispatching live in common and are identical on Linux/Windows.
+// hooks (sleep cooperation, sleep-now, quit, about). All strings, menu
+// structure, state queries and click dispatching live in common and are
+// identical on Linux/Windows.
 
 type
   TStayAwakeApp = objcclass(NSObject)
@@ -49,40 +44,20 @@ var
 function MakeTrayNSImage: NSImage; forward;
 function MakeEyeNSImage(Px, Pt: Integer; Template: Boolean): NSImage; forward;
 procedure PowerLog(const s: string); forward;
+const
+  SEnableCmd = 'sudo pmset -a disablesleep 1';
+  SDisableCmd = 'sudo pmset -a disablesleep 0';
+function HookLidState: Boolean; cdecl; forward;
+procedure HookLidRequest(ABlock: Boolean); cdecl; forward;
 
-// ---- Platform hooks ---------------------------------------------------------
+// ---- libc helpers -----------------------------------------------------------
 
-procedure HookRefreshVisual; cdecl;
-var
-  img: NSImage;
-  i: Integer;
-begin
-  if StatusItem = nil then
-    Exit;
-  img := MakeTrayNSImage;
-  if img <> nil then
-  begin
-    StatusItem.setImage(img);
-    img.release;
-  end;
-  StatusItem.setToolTip(NSString.stringWithUTF8String(PChar(TrayTooltip)));
-  for i := 0 to High(Bindings) do
-    with Bindings[i] do
-      case Node^.Kind of
-        mkCheck, mkRadio:
-        begin
-          if MenuActionState(Node^.Action) then
-            Item.setState(NSOnState)
-          else
-            Item.setState(NSOffState);
-        end;
-      end;
-end;
-
-procedure HookApplyAwake; cdecl;
-begin
-  UpdateExecutionState;
-end;
+// libc stdio for capturing pmset output (avoids a TProcess dependency; libc
+// is always linked on darwin). system() runs a command and waits.
+function popen(cmd: PAnsiChar; mode: PAnsiChar): Pointer; cdecl; external 'c' name 'popen';
+function pclose(stream: Pointer): cint; cdecl; external 'c' name 'pclose';
+function fgets(buf: PAnsiChar; size: cint; stream: Pointer): PAnsiChar; cdecl; external 'c' name 'fgets';
+function system(cmd: PAnsiChar): cint; cdecl; external 'c' name 'system';
 
 function PopenRead(const cmd: string): string;
 const
@@ -118,6 +93,182 @@ begin
     NSString.stringWithUTF8String('public.utf8-plain-text'));
 end;
 
+// ---- Platform hooks ---------------------------------------------------------
+
+procedure HookRefreshVisual; cdecl;
+var
+  img: NSImage;
+  i: Integer;
+begin
+  if StatusItem = nil then
+    Exit;
+  img := MakeTrayNSImage;
+  if img <> nil then
+  begin
+    StatusItem.setImage(img);
+    img.release;
+  end;
+  StatusItem.setToolTip(NSString.stringWithUTF8String(PChar(TrayTooltip)));
+  for i := 0 to High(Bindings) do
+    with Bindings[i] do
+      case Node^.Kind of
+        mkCheck, mkRadio:
+        begin
+          if MenuActionState(Node^.Action) then
+            Item.setState(NSOnState)
+          else
+            Item.setState(NSOffState);
+        end;
+      end;
+end;
+
+procedure HookApplyAwake; cdecl;
+begin
+  UpdateExecutionState;
+end;
+
+procedure HookSleepNow; cdecl;
+begin
+  // `pmset sleepnow` needs no root and still works while SleepDisabled=1 is
+  // set (verified on-device: "Software Sleep pid=..." entry) - which is what
+  // makes the disablesleep-based lid guard viable at all.
+  system('/usr/bin/pmset sleepnow');
+end;
+
+// ---- Lid close (macOS): guided one-time admin command -----------------------
+// `pmset -a disablesleep 1` keeps the machine awake with the lid closed (on
+// any power source). It needs elevation once; the menu drives it through the
+// clipboard-guide dialog. The tray radio reflects the REAL pmset state
+// (SleepDisabled flag in `pmset -g`).
+
+function HookLidState: Boolean; cdecl;
+var
+  outp, line: string;
+  i, start: Integer;
+begin
+  // The flag shows up in `pmset -g` as a tab-separated "SleepDisabled 1"
+  // line. It does NOT appear in `pmset -g custom` on current macOS (verified
+  // on a machine with the setting active), which the first version parsed.
+  Result := False;
+  outp := LowerCase(PopenRead('/usr/bin/pmset -g 2>/dev/null'));
+  i := Pos('sleepdisabled', outp);
+  if i = 0 then
+    Exit;
+  start := i + Length('sleepdisabled');
+  line := Copy(outp, start, Length(outp));
+  i := Pos(#10, line);
+  if i > 0 then
+    line := Copy(line, 1, i - 1);
+  line := Trim(line);
+  Result := (line <> '') and (line[1] = '1');
+end;
+
+procedure ShowLidGuideDialog(ABlock: Boolean);
+var
+  alert: NSAlert;
+  info, cmd: string;
+begin
+  if ABlock then
+  begin
+    cmd := SEnableCmd;
+    info :=
+        'macOS 不允许普通应用拦截合盖睡眠,需要一次性管理员命令(终端中执行):' + #10#10 +
+        cmd + #10#10 +
+        '设置后合盖将保持唤醒(插电与电池均如此);' + #10 +
+        '需要休眠时使用本菜单的「立即睡眠」;' + #10 +
+        '恢复命令:sudo pmset -a disablesleep 0' + #10#10 +
+        '点「复制命令」后在终端粘贴执行即可。菜单勾选状态反映真实设置。';
+  end
+  else
+  begin
+    cmd := SDisableCmd;
+    info :=
+        '恢复 macOS 默认合盖行为,请执行一次性命令:' + #10#10 +
+        cmd + #10#10 +
+        '点「复制命令」后在终端粘贴执行即可。菜单勾选状态反映真实设置。';
+  end;
+  alert := NSAlert.alloc.init;
+  alert.setMessageText(NSString.stringWithUTF8String(PChar(L(LidTextTitle))));
+  alert.setInformativeText(NSString.stringWithUTF8String(PChar(info)));
+  alert.addButtonWithTitle(NSString.stringWithUTF8String('复制命令 / Copy'));
+  alert.addButtonWithTitle(NSString.stringWithUTF8String('好 / OK'));
+  if alert.runModal = NSAlertFirstButtonReturn then
+    CopyToClipboard(cmd);
+  alert.release;
+end;
+
+procedure HookLidRequest(ABlock: Boolean); cdecl;
+var
+  now: Boolean;
+begin
+  now := HookLidState;
+  if ABlock = now then
+    Exit; // already in the requested state
+  ShowLidGuideDialog(ABlock);
+  if Assigned(TrayHooks.RefreshVisual) then
+    TrayHooks.RefreshVisual;
+end;
+
+procedure HookApplyLanguage; cdecl;
+var
+  i: Integer;
+begin
+  for i := 0 to High(Bindings) do
+    Bindings[i].Item.setTitle(
+      NSString.stringWithUTF8String(PChar(L(Bindings[i].Node^.Text))));
+  HookRefreshVisual;
+end;
+
+procedure HookShowAbout; cdecl;
+var
+  alert: NSAlert;
+  info: string;
+  icon: NSImage;
+begin
+  alert := NSAlert.alloc.init;
+  alert.setMessageText(NSString.stringWithUTF8String(PChar(L(SAbout))));
+  info := AboutText;
+  alert.setInformativeText(NSString.stringWithUTF8String(PChar(info)));
+  // The bundle ships no .icns, so NSAlert would fall back to the generic
+  // system app icon; show the colored eye instead (same artwork as the tray).
+  icon := MakeEyeNSImage(256, 64, False);
+  if icon <> nil then
+  begin
+    alert.setIcon(icon);
+    icon.release;
+  end;
+  alert.addButtonWithTitle(NSString.stringWithUTF8String('OK'));
+  alert.runModal;
+  alert.release;
+end;
+
+procedure HookQuit; cdecl;
+begin
+  NSApplication(NSApp).terminate(nil);
+end;
+
+function HookSystemLang: string; cdecl;
+var
+  langs: NSArray;
+  s: NSString;
+begin
+  // FPC 3.2.2 cocoa bindings lack NSLocale.languageCode; the AppleLanguages
+  // user default carries the same information ("zh-Hans-CN" style entries).
+  Result := '';
+  langs := NSUserDefaults.standardUserDefaults.objectForKey(
+    NSString.stringWithUTF8String('AppleLanguages'));
+  if (langs <> nil) and (langs.count > 0) then
+  begin
+    s := NSString(langs.objectAtIndex(0));
+    if s <> nil then
+    begin
+      Result := LowerCase(s.UTF8String);
+      if Pos('-', Result) > 0 then
+        Result := Copy(Result, 1, Pos('-', Result) - 1);
+    end;
+  end;
+end;
+
 // ---- System sleep cooperation (macOS) ---------------------------------------
 // Userspace cannot veto clamshell sleep on current macOS - exhaustively
 // verified: power assertions are ignored, IOCancelPowerChange only delays
@@ -131,6 +282,10 @@ end;
 // (0xE0000270/80/300/320/330), NOT the 0xE0000200-series kIOPMMessage*
 // constants from IOPMLib - the wrong family makes the handler fall through
 // and sleep stalls 30 s (powerd: "stayawake timed out").
+//
+// The menu's "Sleep Now" item goes through `pmset sleepnow`, which is an
+// explicit request and still works while SleepDisabled=1 is armed by the
+// lid guard (verified on-device).
 
 procedure PowerLog(const s: string);
 var
@@ -243,106 +398,6 @@ begin
   PowerLog(Format('runloop source=%s', [HexStr(src)]));
   if src <> nil then
     CFRunLoopAddSource(CFRunLoopGetMain(), src, kCFRunLoopDefaultMode);
-end;
-
-// Legacy migration: machines that still carry `pmset disablesleep 1` (the
-// previous guided-admin approach) have a dead Sleep menu item even without
-// this app; detect it once per launch and offer the restore command.
-function PmsetSleepDisabled: Boolean;
-var
-  outp, line: string;
-  i, start: Integer;
-begin
-  Result := False;
-  outp := LowerCase(PopenRead('/usr/bin/pmset -g 2>/dev/null'));
-  i := Pos('sleepdisabled', outp);
-  if i = 0 then
-    Exit;
-  start := i + Length('sleepdisabled');
-  line := Copy(outp, start, Length(outp));
-  i := Pos(#10, line);
-  if i > 0 then
-    line := Copy(line, 1, i - 1);
-  line := Trim(line);
-  Result := (line <> '') and (line[1] = '1');
-end;
-
-procedure ShowLegacyMigrationDialog;
-var
-  alert: NSAlert;
-begin
-  alert := NSAlert.alloc.init;
-  alert.setMessageText(NSString.stringWithUTF8String(PChar(L(SLidTitle))));
-  alert.setInformativeText(NSString.stringWithUTF8String(PChar(
-      '检测到系统仍带有旧的 SleepDisabled 设置,它会让菜单「睡眠」失效。' + #10#10 +
-      '请执行以下命令恢复,本应用已改用无需管理员的协商机制:' + #10#10 +
-      'sudo pmset -a disablesleep 0' + #10#10 +
-      '命令已复制到剪贴板。')));
-  alert.addButtonWithTitle(NSString.stringWithUTF8String('复制命令 / Copy'));
-  alert.addButtonWithTitle(NSString.stringWithUTF8String('好 / OK'));
-  if alert.runModal = NSAlertFirstButtonReturn then
-    CopyToClipboard('sudo pmset -a disablesleep 0');
-  alert.release;
-end;
-
-procedure HookApplyLanguage; cdecl;
-var
-  i: Integer;
-begin
-  for i := 0 to High(Bindings) do
-    Bindings[i].Item.setTitle(
-      NSString.stringWithUTF8String(PChar(L(Bindings[i].Node^.Text))));
-  HookRefreshVisual;
-end;
-
-procedure HookShowAbout; cdecl;
-var
-  alert: NSAlert;
-  info: string;
-  icon: NSImage;
-begin
-  alert := NSAlert.alloc.init;
-  alert.setMessageText(NSString.stringWithUTF8String(PChar(L(SAbout))));
-  info := AboutText;
-  alert.setInformativeText(NSString.stringWithUTF8String(PChar(info)));
-  // The bundle ships no .icns, so NSAlert would fall back to the generic
-  // system app icon; show the colored eye instead (same artwork as the tray).
-  icon := MakeEyeNSImage(256, 64, False);
-  if icon <> nil then
-  begin
-    alert.setIcon(icon);
-    icon.release;
-  end;
-  alert.addButtonWithTitle(NSString.stringWithUTF8String('OK'));
-  alert.runModal;
-  alert.release;
-end;
-
-procedure HookQuit; cdecl;
-begin
-  NSApplication(NSApp).terminate(nil);
-end;
-
-function HookSystemLang: string; cdecl;
-var
-  langs: NSArray;
-  s: NSString;
-begin
-  // FPC 3.2.2 cocoa bindings lack NSLocale.languageCode; the AppleLanguages
-  // user default carries the same information ("zh-Hans-CN" style entries).
-  Result := '';
-  langs := NSUserDefaults.standardUserDefaults.objectForKey(
-    NSString.stringWithUTF8String('AppleLanguages'));
-  if (langs <> nil) and (langs.count > 0) then
-  begin
-    s := NSString(langs.objectAtIndex(0));
-    if s <> nil then
-    begin
-      Result := LowerCase(s.UTF8String);
-      if Pos('-', Result) > 0 then
-        Result := Copy(Result, 1, Pos('-', Result) - 1);
-    end;
-  end;
 end;
 
 // ---- Menu construction ------------------------------------------------------
@@ -472,11 +527,21 @@ begin
   if TrayConfigDir <> '' then
     TrayConfigDir := TrayConfigDir + '/Library/Application Support';
 
-  // No lid-close feature on macOS: exhaustively verified that userspace
+  // No lid-close blocking on macOS: exhaustively verified that userspace
   // cannot veto clamshell sleep (assertions ignored; IOCancelPowerChange
   // only delays ~5 s; pmset disablesleep would also kill the Sleep menu).
-  // See docs/02-design.md for the evidence trail.
-  TrayHooks.HasLid := False;
+  // See docs/02-design.md for the evidence trail. The menu instead offers
+  // "Sleep Now" (`pmset sleepnow`), which works regardless of that setting.
+  // The lid submenu IS available on macOS - via the guided one-time admin
+  // command (`pmset disablesleep`). Verified exhaustively that this is the
+  // only mechanism that blocks clamshell sleep while keeping everything
+  // else intact; manual sleep goes through the menu's "Sleep Now".
+  TrayHooks.HasLid := True;
+  TrayHooks.HasSleepNow := True;
+
+  LidTextTitle[tlEn] := 'Lid Close';                        LidTextTitle[tlZh] := '合盖行为';
+  LidTextBlock[tlEn] := 'Stay awake when closed';           LidTextBlock[tlZh] := '保持唤醒(合盖不睡眠)';
+  LidTextAllow[tlEn] := 'System default (sleep on close)';  LidTextAllow[tlZh] := '系统默认(合盖睡眠)';
 
   TrayHooks.RefreshVisual := @HookRefreshVisual;
   TrayHooks.ApplyAwake := @HookApplyAwake;
@@ -484,8 +549,9 @@ begin
   TrayHooks.ApplyLanguage := @HookApplyLanguage;
   TrayHooks.ShowAbout := @HookShowAbout;
   TrayHooks.Quit := @HookQuit;
-  TrayHooks.LidState := nil;
-  TrayHooks.LidRequest := nil;
+  TrayHooks.SleepNow := @HookSleepNow;
+  TrayHooks.LidState := @HookLidState;
+  TrayHooks.LidRequest := @HookLidRequest;
   TraySystemLang := @HookSystemLang;
 end;
 
@@ -512,7 +578,7 @@ begin
     img.release;
   end;
 
-  MenuRoot := BuildTrayMenu(TrayHooks.HasLid);
+  MenuRoot := BuildTrayMenu(TrayHooks.HasLid, TrayHooks.HasSleepNow);
   menu := NSMenu.alloc.initWithTitle(NSString.stringWithUTF8String('StayAwake'));
   FillMenu(menu, MenuRoot);
 
@@ -521,8 +587,6 @@ begin
 
   InitPowerNegotiation;
   RegisterPowerNotifications;
-  if PmsetSleepDisabled then
-    ShowLegacyMigrationDialog;
   HookRefreshVisual;
   app.run;
 end;

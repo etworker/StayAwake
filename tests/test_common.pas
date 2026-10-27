@@ -126,11 +126,12 @@ end;
 procedure TestMenuTree;
 var
   Root, Lid, Lang: PMenuNode;
+  i: Integer;
 begin
   ResetConfig;
 
-  Root := BuildTrayMenu(True);
-  Check('D1 lid tree has 10 top nodes', CountChildren(Root) = 10);
+  Root := BuildTrayMenu(True, False);
+  Check('D1 lid tree (no sleepnow) has 10 top nodes', CountChildren(Root) = 10);
   Check('D2 first is checkable awake row',
     (Root^.Sub[0]^.Kind = mkCheck) and (Root^.Sub[0]^.Action = maToggleAwake));
   Lid := Root^.Sub[2];
@@ -146,13 +147,23 @@ begin
   Check('D8 quit is last', Root^.Sub[9]^.Action = maQuit);
   FreeTrayMenu(Root);
 
-  Root := BuildTrayMenu(False);
-  Check('D9 no-lid tree has 9 top nodes', CountChildren(Root) = 9);
+  Root := BuildTrayMenu(False, False);
+  Check('D9 no-lid tree (no sleepnow) has 9 top nodes', CountChildren(Root) = 9);
   Check('D10 no lid submenu anywhere',
     (Root^.Sub[2]^.Action = maAutostart) and (Root^.Sub[2]^.Kind = mkCheck));
   FreeTrayMenu(Root);
   FreeTrayMenu(Root);   // double free must be safe (nil check)
   Check('D11 double free safe', Root = nil);
+
+  // macOS-style tree: lid off, Sleep Now on (item + its separator appended)
+  Root := BuildTrayMenu(False, True);
+  Check('D12 sleepnow tree has 11 top nodes', CountChildren(Root) = 11);
+  Check('D13 sleepnow item placed before the About group',
+    (Root^.Sub[5]^.Kind = mkItem) and (Root^.Sub[5]^.Action = maSleepNow) and
+    (Root^.Sub[6]^.Kind = mkSep) and (Root^.Sub[8]^.Action = maAbout));
+  Check('D14 sleepnow label', (Root^.Sub[5]^.Text[tlEn] = SSleepNow[tlEn]) and
+    (Root^.Sub[5]^.Text[tlZh] = SSleepNow[tlZh]));
+  FreeTrayMenu(Root);
 end;
 
 // ---- E. states & dispatch ---------------------------------------------------
