@@ -78,7 +78,6 @@ type
   TTrayHooks = record
     HasLid: Boolean;                 // False on Windows (no lid feature)
     HasSleepNow: Boolean;            // macOS only: pmset sleepnow is rootless
-    LidBatteryTimer: Boolean;        // macOS only: per-battery lid timer radios
     RefreshVisual: procedure; cdecl; // icon + tooltip + menu state re-sync
     ApplyAwake: procedure; cdecl;    // AppActive just changed: update assertions/nudge
     ApplyLidMode: procedure; cdecl;  // lid-mode file just changed: apply guard (Linux)

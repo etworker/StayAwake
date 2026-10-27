@@ -670,7 +670,7 @@ begin
     img.release;
   end;
 
-  MenuRoot := BuildTrayMenu(TrayHooks.HasLid, TrayHooks.HasSleepNow, TrayHooks.LidBatteryTimer);
+  MenuRoot := BuildTrayMenu(TrayHooks.HasLid, TrayHooks.HasSleepNow, TrayHooks.LidPerSource);
   menu := NSMenu.alloc.initWithTitle(NSString.stringWithUTF8String('StayAwake'));
   FillMenu(menu, MenuRoot);
 
