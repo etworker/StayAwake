@@ -64,7 +64,7 @@
 2. **睡眠协商取消**：读 IORegistry 的 `AppleClamshellState`（powerd 自己的合盖标志，判定精准）并应答 `IOCancelPowerChange`——powerd 仅将睡眠**延迟约 5 秒**后照常执行，且不再重新询问应用——无效；
 3. **`pmset disablesleep`**：**有效**，但会连 Apple 菜单「睡眠」一并禁用。
 
-**最终方案（用户确认）**：接受第 3 项的代价，睡眠入口改由应用提供——
+**最终方案（用户确认）**：接受第 3 项的代价，睡眠入口改由应用提供；切换与「立即睡眠」通过一次性安装的白名单 sudoers 条目实现**永久免密**（`src/macos/guard/install.sh`，sudo 运行一次，卸载用 `uninstall.sh`）——
 
 - 合盖子菜单（macOS）切换 `disablesleep`：「保持唤醒(合盖不睡眠)」/「系统默认(合盖睡眠)」，勾选直接反映 pmset 真实状态（`pmset -g` 的 `SleepDisabled` 标志，经 libc `popen` 读取）；
 - 点选与真实状态不符的一侧时弹出引导对话框，给出一次性命令（`sudo pmset -a disablesleep 1` / `... 0`）并自动复制到剪贴板；
