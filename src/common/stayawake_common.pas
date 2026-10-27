@@ -119,7 +119,7 @@ const
   SLangTitle: TStrMap = ('Language', '语言 / Language');
   SLangAuto: TStrMap = ('Follow System', '跟随系统');
   SSleepNow: TStrMap = ('Sleep Now', '立即睡眠');
-  SBatTitle: TStrMap = ('On Battery', '电池供电合盖');
+  SBatTitle: TStrMap = ('On Battery', '用电池时');
   SBat5: TStrMap   = ('Stay awake 5 min, then sleep', '保持清醒 5 分钟后睡眠');
   SBat15: TStrMap  = ('Stay awake 15 min, then sleep', '保持清醒 15 分钟后睡眠');
   SBat30: TStrMap  = ('Stay awake 30 min, then sleep', '保持清醒 30 分钟后睡眠');
