@@ -319,14 +319,12 @@ end;
 // at that point).
 procedure LidPolicyApply;
 var
-  mode: string;
+  acAwake: Boolean;
   mins, elapsed: Integer;
   clam, onAC: Boolean;
   wantC, wantB: Integer;
 begin
-  if (IOServiceGetMatchingService = nil) or (CGGetOnlineDisplayList = nil) then
-    Exit;
-  mode := LidMode;
+  acAwake := LidAcAwake;
   mins := LidBatteryMinutes;
   clam := AppleClamshellClosed;
   if clam and (not gWasClam) then
@@ -342,42 +340,38 @@ begin
   gWasClam := clam;
   onAC := OnACPower;
 
-  wantC := 0;
-  wantB := 0;
-  if mode = 'block' then
+  // Disablesleep profiles are armed persistently per source (so a later lid
+  // close is covered without any race); the battery timer only decides when
+  // to disarm the battery profile and send the sleep.
+  wantC := Ord(acAwake);
+  wantB := Ord((not gBatSleepSent) and (mins > 0));
+
+  if clam and (not onAC) and (mins > 0) and (not gBatSleepSent) then
   begin
-    wantC := 1;
-    wantB := 1;
-    if clam and (not onAC) then
+    if gClamSince <> 0 then
+      elapsed := MinutesBetween(Now, gClamSince)
+    else
+      elapsed := 0;
+    if elapsed >= mins then
     begin
-      if gClamSince <> 0 then
-        elapsed := MinutesBetween(Now, gClamSince)
-      else
-        elapsed := 0;
-      if elapsed >= mins then
-      begin
-        // Timer expired: allow sleep on battery and put it to sleep now.
-        wantB := 0;
-        if not gBatSleepSent then
-        begin
-          RunPmset('-b disablesleep 0');
-          RunPmset('sleepnow');
-          gBatSleepSent := True;
-          PowerLog('battery lid timer expired: sleeping now');
-        end;
-      end;
+      // Timer expired on battery: disarm and put the machine to sleep; it
+      // stays asleep (the battery profile stays at disablesleep 0).
+      gBatSleepSent := True;
+      wantB := 0;
+      RunPmset('-b disablesleep 0');
+      RunPmset('sleepnow');
+      PowerLog(Format('battery lid timer (%d min) expired: sleeping', [mins]));
     end;
   end;
 
-  if wantC <> gLastAppliedC then
+  if (wantC <> gLastAppliedC) or (wantB <> gLastAppliedB) then
   begin
     RunPmset(Format('-c disablesleep %d', [wantC]));
-    gLastAppliedC := wantC;
-  end;
-  if wantB <> gLastAppliedB then
-  begin
     RunPmset(Format('-b disablesleep %d', [wantB]));
+    gLastAppliedC := wantC;
     gLastAppliedB := wantB;
+    PowerLog(Format('policy applied: ac=%d bat=%d (clam=%s acPower=%s)',
+      [wantC, wantB, BoolToStr(clam, True), BoolToStr(onAC, True)]));
   end;
 end;
 

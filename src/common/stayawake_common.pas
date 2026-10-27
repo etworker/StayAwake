@@ -49,6 +49,8 @@ type
     maToggleAwake,
     maLidBlock,
     maLidAllow,
+    maAcLidAwake,
+    maBatClose,
     maAutostart,
     maLangAuto,
     maLangEn,
@@ -83,6 +85,7 @@ type
     ApplyLanguage: procedure; cdecl; // language file just changed: relabel everything
     ShowAbout: procedure; cdecl;
     Quit: procedure; cdecl;
+    LidPerSource: Boolean;           // macOS: per-source lid submenu style
     // External lid-state mechanism (macOS): when LidState is set, the menu's
     // lid radio reflects LidState() instead of the mode file, and lid clicks
     // are routed to LidRequest instead of writing the file.
@@ -110,11 +113,13 @@ const
   SLidTitle: TStrMap = ('Lid Close on AC Power', '合盖行为(接电源时)');
   SLidBlock: TStrMap = ('Do Nothing (Guard blocks sleep)', '不动作(守卫拦截睡眠)');
   SLidAllow: TStrMap = ('Suspend (system default)', '睡眠(系统默认)');
+  SAcLidAwake: TStrMap = ('Stay awake when the lid closes (AC)', '插电合盖保持唤醒');
+  SBatClose: TStrMap = ('Sleep on close (system default)', '合盖睡眠(系统默认)');
   SAutoStart: TStrMap = ('Run at Login', '开机自启');
   SLangTitle: TStrMap = ('Language', '语言 / Language');
   SLangAuto: TStrMap = ('Follow System', '跟随系统');
   SSleepNow: TStrMap = ('Sleep Now', '立即睡眠');
-  SBatTitle: TStrMap = ('Battery: stay awake after close for', '电池合盖:保持清醒');
+  SBatTitle: TStrMap = ('On Battery', '电池供电合盖');
   SBat5: TStrMap   = ('5 min, then sleep', '5 分钟后睡眠');
   SBat15: TStrMap  = ('15 min, then sleep', '15 分钟后睡眠');
   SBat30: TStrMap  = ('30 min, then sleep', '30 分钟后睡眠');
@@ -131,6 +136,8 @@ function LangFilePath: string;
 function LidFilePath: string;
 function LidBatteryMinutesPath: string;
 function LidBatteryMinutes: Integer;
+function LidAcAwake: Boolean;              // lid-ac file: 'awake' (default: false)
+procedure SetLidAcAwake(AAwake: Boolean);
 
 // Lid submenu labels. Initialized from SLid* (Linux semantics: AC-only
 // guard); a platform may override before the tray starts when its lid
@@ -138,8 +145,11 @@ function LidBatteryMinutes: Integer;
 // power source, so "AC Power" would be wrong).
 var
   LidTextTitle: TStrMap;
-  LidTextBlock: TStrMap;
-  LidTextAllow: TStrMap;
+  LidTextBlock: TStrMap;   // Linux guard style: the "block" radio label
+  LidTextAllow: TStrMap;   // Linux guard style: the "allow" radio label
+  LidAcAwakeText: TStrMap; // per-source style: the AC checkbox label
+  LidBatTitle: TStrMap;    // per-source style: battery submenu title
+  LidBatCloseText: TStrMap;
 
 // Language selection: explicit choice in the lang file wins, otherwise the
 // system UI language (zh-* -> Chinese).
@@ -153,7 +163,7 @@ function LidMode: string;
 procedure SetLidMode(AMode: string);
 
 // The one menu definition. Callers own the returned tree (FreeTrayMenu).
-function BuildTrayMenu(HasLid, HasSleepNow, LidBatteryTimer: Boolean): PMenuNode;
+function BuildTrayMenu(HasLid, HasSleepNow, LidPerSource: Boolean): PMenuNode;
 procedure FreeTrayMenu(var Root: PMenuNode);
 
 // Checked/radio state of an action, as the renderer should display it.
@@ -327,17 +337,38 @@ begin
   Result := TrayConfigDir + '/stayawake/lid-battery-mins';
 end;
 
-// Battery lid timer length in minutes (default 15; junk -> 15).
+// Battery lid timer length in minutes; 0 = sleep immediately on close.
+// Junk falls back to 0 (system default), never to an awake-forever value.
 function LidBatteryMinutes: Integer;
 var
   v: string;
   n, code: Integer;
 begin
-  Result := 15;
+  Result := 0;
   v := Trim(ReadConfigValue(LidBatteryMinutesPath, ''));
   Val(v, n, code);
   if (code = 0) and (n > 0) then
     Result := n;
+end;
+
+function LidAcAwakePath: string;
+begin
+  if TrayConfigDir = '' then
+    Exit('');
+  Result := TrayConfigDir + '/stayawake/lid-ac';
+end;
+
+function LidAcAwake: Boolean;
+begin
+  Result := ReadConfigValue(LidAcAwakePath, 'default') = 'awake';
+end;
+
+procedure SetLidAcAwake(AAwake: Boolean);
+begin
+  if AAwake then
+    WriteConfigValue(LidAcAwakePath, 'awake')
+  else
+    WriteConfigValue(LidAcAwakePath, 'default');
 end;
 
 function CurrentLangStored: string;
@@ -425,7 +456,7 @@ begin
   N := nil;
 end;
 
-function BuildTrayMenu(HasLid, HasSleepNow, LidBatteryTimer: Boolean): PMenuNode;
+function BuildTrayMenu(HasLid, HasSleepNow, LidPerSource: Boolean): PMenuNode;
 var
   lid, lang, bat: PMenuNode;
   Fixed: TStrMap;
@@ -438,17 +469,25 @@ begin
   if HasLid then
   begin
     lid := NewNode(mkSubmenu, maNone, LidTextTitle, 0);
-    AddChild(lid, NewNode(mkRadio, maLidBlock, LidTextBlock, RG_LID));
-    AddChild(lid, NewNode(mkRadio, maLidAllow, LidTextAllow, RG_LID));
-    if LidBatteryTimer then
+    if LidPerSource then
     begin
+      // Per-source style (macOS): AC checkbox + battery submenu whose first
+      // radio is the system default (sleep on close).
+      AddChild(lid, NewNode(mkCheck, maAcLidAwake, LidAcAwakeText, 0));
       AddChild(lid, NewNode(mkSep, maNone, SEmpty, 0));
-      bat := NewNode(mkSubmenu, maNone, SBatTitle, 0);
+      bat := NewNode(mkSubmenu, maNone, LidBatTitle, 0);
+      AddChild(bat, NewNode(mkRadio, maBatClose, LidBatCloseText, RG_BAT));
       AddChild(bat, NewNode(mkRadio, maBat5, SBat5, RG_BAT));
       AddChild(bat, NewNode(mkRadio, maBat15, SBat15, RG_BAT));
       AddChild(bat, NewNode(mkRadio, maBat30, SBat30, RG_BAT));
       AddChild(bat, NewNode(mkRadio, maBat60, SBat60, RG_BAT));
       AddChild(lid, bat);
+    end
+    else
+    begin
+      // Guard style (Linux): block / allow radios.
+      AddChild(lid, NewNode(mkRadio, maLidBlock, LidTextBlock, RG_LID));
+      AddChild(lid, NewNode(mkRadio, maLidAllow, LidTextAllow, RG_LID));
     end;
     AddChild(Result, lid);
   end;
@@ -494,6 +533,8 @@ begin
                      Result := not TrayHooks.LidState()
                    else
                      Result := LidMode <> 'block';
+    maAcLidAwake:  Result := LidAcAwake;
+    maBatClose:    Result := LidBatteryMinutes = 0;
     maLangAuto:    Result := (CurrentLangStored <> 'en') and (CurrentLangStored <> 'zh');
     maLangEn:      Result := CurrentLangStored = 'en';
     maLangZh:      Result := CurrentLangStored = 'zh';
@@ -536,6 +577,22 @@ begin
         TrayHooks.LidRequest(False)
       else
         SetLidMode('allow');
+    maAcLidAwake:
+    begin
+      SetLidAcAwake(not LidAcAwake);
+      if Assigned(TrayHooks.ApplyLidMode) then
+        TrayHooks.ApplyLidMode;
+      if Assigned(TrayHooks.RefreshVisual) then
+        TrayHooks.RefreshVisual;
+    end;
+    maBatClose:
+    begin
+      WriteConfigValue(LidBatteryMinutesPath, '0');
+      if Assigned(TrayHooks.ApplyLidMode) then
+        TrayHooks.ApplyLidMode;
+      if Assigned(TrayHooks.RefreshVisual) then
+        TrayHooks.RefreshVisual;
+    end;
     maBat5:  WriteConfigValue(LidBatteryMinutesPath, '5');
     maBat15: WriteConfigValue(LidBatteryMinutesPath, '15');
     maBat30: WriteConfigValue(LidBatteryMinutesPath, '30');
@@ -615,5 +672,8 @@ initialization
   LidTextTitle := SLidTitle;
   LidTextBlock := SLidBlock;
   LidTextAllow := SLidAllow;
+  LidAcAwakeText := SAwake;          // replaced by platforms that use it
+  LidBatTitle := SBatTitle;
+  LidBatCloseText := SBatClose;
 
 end.

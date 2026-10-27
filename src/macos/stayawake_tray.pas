@@ -50,10 +50,7 @@ procedure RunSudoPmset(const args: string); forward;
 const
   SEnableCmd = 'sudo pmset -a disablesleep 1';
   SDisableCmd = 'sudo pmset -a disablesleep 0';
-function HookLidState: Boolean; cdecl; forward;
 function PmsetSleepDisabled: Boolean; forward;
-procedure ShowLidGuideDialog(ABlock: Boolean); forward;
-procedure HookLidRequest(ABlock: Boolean); cdecl; forward;
 
 // ---- libc helpers -----------------------------------------------------------
 
@@ -256,7 +253,7 @@ begin
     if not RunRootCommand('/bin/sh', ['-c',
         '/usr/bin/pmset -a disablesleep 0; /usr/bin/pmset sleepnow; sleep 20; /usr/bin/pmset -a disablesleep 1'])
     then
-      ShowLidGuideDialog(True);
+      PowerLog('SleepNow authorization canceled');
   end;
 end;
 
@@ -286,83 +283,6 @@ begin
     line := Copy(line, 1, i - 1);
   line := Trim(line);
   Result := (line <> '') and (line[1] = '1');
-end;
-
-function HookLidState: Boolean; cdecl;
-var
-  outp, line: string;
-  i, start: Integer;
-begin
-  // The flag shows up in `pmset -g` as a tab-separated "SleepDisabled 1"
-  // line. It does NOT appear in `pmset -g custom` on current macOS (verified
-  // on a machine with the setting active), which the first version parsed.
-  Result := False;
-  outp := LowerCase(PopenRead('/usr/bin/pmset -g 2>/dev/null'));
-  i := Pos('sleepdisabled', outp);
-  if i = 0 then
-    Exit;
-  start := i + Length('sleepdisabled');
-  line := Copy(outp, start, Length(outp));
-  i := Pos(#10, line);
-  if i > 0 then
-    line := Copy(line, 1, i - 1);
-  line := Trim(line);
-  Result := (line <> '') and (line[1] = '1');
-end;
-
-procedure ShowLidGuideDialog(ABlock: Boolean);
-var
-  alert: NSAlert;
-  info, cmd: string;
-begin
-  if ABlock then
-  begin
-    cmd := SEnableCmd;
-    info :=
-        'macOS 不允许普通应用拦截合盖睡眠,需要一次性管理员命令(终端中执行):' + #10#10 +
-        cmd + #10#10 +
-        '设置后合盖将保持唤醒(插电与电池均如此);' + #10 +
-        '需要休眠时使用本菜单的「立即睡眠」;' + #10 +
-        '恢复命令:sudo pmset -a disablesleep 0' + #10#10 +
-        '点「复制命令」后在终端粘贴执行即可。菜单勾选状态反映真实设置。';
-  end
-  else
-  begin
-    cmd := SDisableCmd;
-    info :=
-        '恢复 macOS 默认合盖行为,请执行一次性命令:' + #10#10 +
-        cmd + #10#10 +
-        '点「复制命令」后在终端粘贴执行即可。菜单勾选状态反映真实设置。';
-  end;
-  alert := NSAlert.alloc.init;
-  alert.setMessageText(NSString.stringWithUTF8String(PChar(L(LidTextTitle))));
-  alert.setInformativeText(NSString.stringWithUTF8String(PChar(info)));
-  alert.addButtonWithTitle(NSString.stringWithUTF8String('复制命令 / Copy'));
-  alert.addButtonWithTitle(NSString.stringWithUTF8String('好 / OK'));
-  if alert.runModal = NSAlertFirstButtonReturn then
-    CopyToClipboard(cmd);
-  alert.release;
-end;
-
-procedure HookLidRequest(ABlock: Boolean); cdecl;
-var
-  now: Boolean;
-begin
-  now := HookLidState;
-  if ABlock = now then
-    Exit; // already in the requested state
-  if LidGuardInstalled then
-  begin
-    // Passwordless: the scoped sudoers entry whitelists this exact command.
-    if ABlock then
-      RunSudoPmset('-a disablesleep 1')
-    else
-      RunSudoPmset('-a disablesleep 0');
-  end
-  else
-    ShowLidGuideDialog(ABlock);
-  if Assigned(TrayHooks.RefreshVisual) then
-    TrayHooks.RefreshVisual;
 end;
 
 procedure HookApplyLanguage; cdecl;
@@ -699,11 +619,21 @@ begin
   TrayHooks.HasLid := Pos('arm64',
     LowerCase(PopenRead('/usr/bin/uname -m 2>/dev/null'))) > 0;
   TrayHooks.HasSleepNow := True;
-  TrayHooks.LidBatteryTimer := True;
+  TrayHooks.LidPerSource := True;
 
   LidTextTitle[tlEn] := 'Lid Close';                        LidTextTitle[tlZh] := '合盖行为';
-  LidTextBlock[tlEn] := 'Stay awake when closed';           LidTextBlock[tlZh] := '保持唤醒(合盖不睡眠)';
-  LidTextAllow[tlEn] := 'System default (sleep on close)';  LidTextAllow[tlZh] := '系统默认(合盖睡眠)';
+  LidAcAwakeText[tlEn] := SAcLidAwake[tlEn];                LidAcAwakeText[tlZh] := SAcLidAwake[tlZh];
+  LidBatTitle[tlEn] := SBatTitle[tlEn];                     LidBatTitle[tlZh] := SBatTitle[tlZh];
+  LidBatCloseText[tlEn] := SBatClose[tlEn];                 LidBatCloseText[tlZh] := SBatClose[tlZh];
+
+  // One-time migration from the old block/allow lid-mode file: 'block'
+  // becomes AC-awake + 15 min battery timer.
+  if (ReadConfigValue(TrayConfigDir + '/stayawake/lid-mode', '') = 'block') and
+     (ReadConfigValue(TrayConfigDir + '/stayawake/lid-ac', '') = '') then
+  begin
+    WriteConfigValue(TrayConfigDir + '/stayawake/lid-ac', 'awake');
+    WriteConfigValue(TrayConfigDir + '/stayawake/lid-battery-mins', '15');
+  end;
 
   TrayHooks.RefreshVisual := @HookRefreshVisual;
   TrayHooks.ApplyAwake := @HookApplyAwake;
@@ -712,8 +642,8 @@ begin
   TrayHooks.ShowAbout := @HookShowAbout;
   TrayHooks.Quit := @HookQuit;
   TrayHooks.SleepNow := @HookSleepNow;
-  TrayHooks.LidState := @HookLidState;
-  TrayHooks.LidRequest := @HookLidRequest;
+  TrayHooks.LidState := nil;
+  TrayHooks.LidRequest := nil;
   TraySystemLang := @HookSystemLang;
 end;
 
