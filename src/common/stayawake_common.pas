@@ -622,7 +622,8 @@ begin
       APP_NAME + ' ' + APP_VERSION + #10#10 +
       'Prevents idle sleep by moving the mouse every ' +
       IntToStr(INTERVAL_SECS) + ' seconds.' + #10#10 +
-      '防止系统因「闲置」而睡眠 / 熄屏 / 锁屏。';
+      '防止系统因「闲置」而睡眠 / 熄屏 / 锁屏。' + #10#10 +
+      'build: ' + {$I %DATE%} + ' ' + {$I %TIME%};
 end;
 
 function ReadConfigValue(FileName, DefValue: string): string;
