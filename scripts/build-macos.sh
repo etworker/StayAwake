@@ -88,6 +88,13 @@ build_macos_arch() {
   if command -v strip >/dev/null 2>&1; then
     strip "$macdir/stayawake"
   fi
+  # Ship the lid-guard install scripts inside the bundle (Resources/guard)
+  # so the app's guide dialog can reference its own copy.
+  if [ -d "$SRC/macos/guard" ]; then
+    mkdir -p "$app/Contents/Resources/guard"
+    cp "$SRC/macos/guard/"*.sh "$app/Contents/Resources/guard/"
+    chmod +x "$app/Contents/Resources/guard/"*.sh
+  fi
   # Wrap into a .app bundle so double-clicking does not open Terminal.
   # LSUIElement=true => menu-bar (agent) app, no Dock icon.
   cat > "$app/Contents/Info.plist" <<PLIST
@@ -143,6 +150,12 @@ case "$MODE" in
     # Slices were already stripped per-arch; the merged fat binary needs no
     # extra pass (lipo output keeps the stripped state).
     cp "$OUT/arm64/StayAwake.app/Contents/Info.plist" "$app/Contents/Info.plist"
+    # Ship the lid-guard scripts in the merged bundle too.
+    if [ -d "$SRC/macos/guard" ]; then
+      mkdir -p "$app/Contents/Resources/guard"
+      cp "$SRC/macos/guard/"*.sh "$app/Contents/Resources/guard/"
+      chmod +x "$app/Contents/Resources/guard/"*.sh
+    fi
     echo "==> universal binary:"; lipo -info "$macdir/stayawake"
     echo "==> built: $app"
     ;;

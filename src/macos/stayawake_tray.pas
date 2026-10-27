@@ -136,6 +136,34 @@ begin
       end;
 end;
 
+// Guide dialog for the not-yet-installed case: one-time admin command,
+// copied to the clipboard. Prefers the guard script bundled inside this
+// .app; falls back to the bare pmset command.
+procedure ShowLidInstallDialog;
+var
+  alert: NSAlert;
+  res, info, cmd: string;
+begin
+  res := ExtractFilePath(ParamStr(0)) + '../Resources/guard/install.sh';
+  if FileExists(res) then
+    cmd := 'sudo "' + res + '"'
+  else
+    cmd := SEnableCmd;
+  info :=
+      '首次启用「合盖保持唤醒」需要一次性管理员命令(终端中执行):' + #10#10 +
+      cmd + #10#10 +
+      '已复制到剪贴板,粘贴回车即可。此后本菜单全部操作免密;' + #10 +
+      '恢复系统默认:合盖行为选「系统默认」,或运行同目录 guard/uninstall.sh。';
+  alert := NSAlert.alloc.init;
+  alert.setMessageText(NSString.stringWithUTF8String(PChar(L(LidTextTitle))));
+  alert.setInformativeText(NSString.stringWithUTF8String(PChar(info)));
+  alert.addButtonWithTitle(NSString.stringWithUTF8String('复制命令 / Copy'));
+  alert.addButtonWithTitle(NSString.stringWithUTF8String('好 / OK'));
+  if alert.runModal = NSAlertFirstButtonReturn then
+    CopyToClipboard(cmd);
+  alert.release;
+end;
+
 procedure HookRefreshVisual; cdecl;
 var
   img: NSImage;
@@ -222,6 +250,10 @@ end;
 procedure HookApplyLidMode; cdecl;
 begin
   LidPolicyApply;
+  // The user just picked a lid option while the passwordless component was
+  // never installed: guide them through the one-time command.
+  if (LidAcAwake or (LidBatteryMinutes > 0)) and (not LidGuardInstalled) then
+    ShowLidInstallDialog;
 end;
 
 procedure HookSleepNow; cdecl;
