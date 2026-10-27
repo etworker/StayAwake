@@ -90,7 +90,7 @@ var
   IORegistryEntryCreateCFProperty: TIORegistryEntryCreateCFProperty = nil;
   IOObjectRelease: TIOObjectRelease = nil;
   // Lid policy state
-  gClosedSince: TDateTime = 0;
+  gClosedSinceMs: Int64 = 0;     // GetTickCount64 ms when the lid closed
   gWasClosed: Boolean = False;
   gBatSleepSent: Boolean = False;
 
@@ -330,19 +330,27 @@ begin
   lidClosed := AppleClamshellClosed;
   if lidClosed and (not gWasClosed) then
   begin
-    gClosedSince := Now;
+    gClosedSinceMs := GetTickCount64;
     gBatSleepSent := False;
   end;
   if not lidClosed then
   begin
-    gClosedSince := 0;
+    gClosedSinceMs := 0;
     gBatSleepSent := False;
   end;
   gWasClosed := lidClosed;
   onAC := OnACPower;
 
+  // Elapsed seconds since the lid closed (ms precision, no minute
+  // rounding - the old TDateTime/MinutesBetween version could sit at
+  // elapsed=0 for most of the window).
+  if gClosedSinceMs <> 0 then
+    elapsed := (GetTickCount64 - gClosedSinceMs) div 1000
+  else
+    elapsed := 0;
+
   // Per-tick diagnostic: shows exactly what the policy sees and decides.
-  PowerLog(Format('tick: acAwake=%s mins=%d lidClosed=%s onAC=%s elapsed=%d sent=%s',
+  PowerLog(Format('tick: acAwake=%s mins=%d lidClosed=%s onAC=%s elapsedSec=%d sent=%s',
     [BoolToStr(acAwake, True), mins, BoolToStr(lidClosed, True),
      BoolToStr(onAC, True), elapsed, BoolToStr(gBatSleepSent, True)]));
 
@@ -354,11 +362,7 @@ begin
 
   if acAwake and lidClosed and (not onAC) and (mins > 0) and (not gBatSleepSent) then
   begin
-    if gClosedSince <> 0 then
-      elapsed := MinutesBetween(Now, gClosedSince)
-    else
-      elapsed := 0;
-    if elapsed >= mins then
+    if elapsed >= mins * 60 then
     begin
       // Timer expired on battery: disarm and put the machine to sleep; it
       // stays asleep (the battery profile stays at disablesleep 0).
@@ -366,7 +370,7 @@ begin
       wantB := 0;
       RunPmset('-b disablesleep 0');
       RunPmset('sleepnow');
-      PowerLog(Format('battery lid timer (%d min) expired: sleeping', [mins]));
+      PowerLog(Format('battery lid timer (%d min) expired after %d s: sleeping', [mins, elapsed]));
     end;
   end;
 
