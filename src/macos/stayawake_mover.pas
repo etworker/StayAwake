@@ -95,8 +95,8 @@ var
   CGDisplayIsBuiltin: TCGDisplayIsBuiltin = nil;
   gLastAppliedC: Integer = -1;   // last disablesleep value applied per source
   gLastAppliedB: Integer = -1;
-  gClamSince: TDateTime = 0;
-  gWasClam: Boolean = False;
+  gClosedSince: TDateTime = 0;
+  gWasClosed: Boolean = False;
   gBatSleepSent: Boolean = False;
 
 procedure InitCoreGraphics;
@@ -117,6 +117,8 @@ begin
   CGEventCreateMouseEvent := TCGEventCreateMouseEvent(GetProcAddress(CGHandle, 'CGEventCreateMouseEvent'));
   CGEventPost := TCGEventPost(GetProcAddress(CGHandle, 'CGEventPost'));
   CGFRelease := TCFRelease(GetProcAddress(CGHandle, 'CFRelease'));
+  CGGetOnlineDisplayList := TCGGetOnlineDisplayList(GetProcAddress(CGHandle, 'CGGetOnlineDisplayList'));
+  CGDisplayIsBuiltin := TCGDisplayIsBuiltin(GetProcAddress(CGHandle, 'CGDisplayIsBuiltin'));
 end;
 
 procedure NudgeMouse;
@@ -208,32 +210,6 @@ begin
   system(PAnsiChar(AnsiString('/usr/bin/sudo -n /usr/bin/pmset ' + args + ' 2>/dev/null')));
 end;
 
-// powerd's own clamshell flag from the IOPMrootDomain registry - the
-// authoritative lid state, updated before any sleep request.
-function AppleClamshellClosed: Boolean;
-var
-  svc, prop: Pointer;
-  key: CFStringRef;
-begin
-  Result := False;
-  if (IOServiceGetMatchingService = nil) or (IOServiceMatching = nil) or
-     (IORegistryEntryCreateCFProperty = nil) or (IOObjectRelease = nil) then
-    Exit;
-  svc := IOServiceGetMatchingService(nil, IOServiceMatching('IOPMrootDomain'));
-  if svc = nil then
-    Exit;
-  key := CFStringCreateWithCString(nil, PAnsiChar('AppleClamshellState'),
-    kCFStringEncodingUTF8);
-  prop := IORegistryEntryCreateCFProperty(svc, key, nil, 0);
-  if prop <> nil then
-  begin
-    Result := prop = CFTypeRef(kCFBooleanTrue);
-    CFRelease(prop);
-  end;
-  CFRelease(key);
-  IOObjectRelease(svc);
-end;
-
 // True when running on AC power (parses `pmset -g batt`); fails open to
 // False = treated as battery (conservative).
 function OnACPower: Boolean;
@@ -317,28 +293,58 @@ end;
 // applied per source via the passwordless sudoers whitelist; the sleep at
 // timer expiry is `pmset sleepnow` (global, but the machine is on battery
 // at that point).
+function BuiltinDisplayOnline: Boolean;
+var
+  ids: array[0..15] of cuint32;
+  n, i: cuint32;
+  builtin: Boolean;
+begin
+  // Built-in panel online = lid open; offline = closed. Under disablesleep
+  // the system ignores the lid switch entirely (AppleClamshellState stays
+  // false), so the panel power state is the observable lid signal.
+  Result := True;   // uncertain -> treat as online (fail open)
+  if (CGGetOnlineDisplayList = nil) or (CGDisplayIsBuiltin = nil) then
+    Exit;
+  n := 0;
+  if CGGetOnlineDisplayList(Length(ids), @ids[0], n) <> 0 then
+    Exit;
+  builtin := False;
+  for i := 0 to n - 1 do
+    if CGDisplayIsBuiltin(ids[i]) then
+    begin
+      builtin := True;
+      Break;
+    end;
+  Result := builtin;
+end;
+
 procedure LidPolicyApply;
 var
   acAwake: Boolean;
   mins, elapsed: Integer;
-  clam, onAC: Boolean;
+  lidClosed, onAC: Boolean;
   wantC, wantB: Integer;
 begin
   acAwake := LidAcAwake;
   mins := LidBatteryMinutes;
-  clam := AppleClamshellClosed;
-  if clam and (not gWasClam) then
+  lidClosed := not BuiltinDisplayOnline;
+  if lidClosed and (not gWasClosed) then
   begin
-    gClamSince := Now;
+    gClosedSince := Now;
     gBatSleepSent := False;
   end;
-  if not clam then
+  if not lidClosed then
   begin
-    gClamSince := 0;
+    gClosedSince := 0;
     gBatSleepSent := False;
   end;
-  gWasClam := clam;
+  gWasClosed := lidClosed;
   onAC := OnACPower;
+
+  // Per-tick diagnostic: shows exactly what the policy sees and decides.
+  PowerLog(Format('tick: acAwake=%s mins=%d lidClosed=%s onAC=%s elapsed=%d sent=%s',
+    [BoolToStr(acAwake, True), mins, BoolToStr(lidClosed, True),
+     BoolToStr(onAC, True), elapsed, BoolToStr(gBatSleepSent, True)]));
 
   // Disablesleep profiles are armed persistently per source (so a later lid
   // close is covered without any race); the battery timer only decides when
@@ -346,10 +352,10 @@ begin
   wantC := Ord(acAwake);
   wantB := Ord((not gBatSleepSent) and (mins > 0));
 
-  if clam and (not onAC) and (mins > 0) and (not gBatSleepSent) then
+  if acAwake and lidClosed and (not onAC) and (mins > 0) and (not gBatSleepSent) then
   begin
-    if gClamSince <> 0 then
-      elapsed := MinutesBetween(Now, gClamSince)
+    if gClosedSince <> 0 then
+      elapsed := MinutesBetween(Now, gClosedSince)
     else
       elapsed := 0;
     if elapsed >= mins then
@@ -370,8 +376,8 @@ begin
     RunPmset(Format('-b disablesleep %d', [wantB]));
     gLastAppliedC := wantC;
     gLastAppliedB := wantB;
-    PowerLog(Format('policy applied: ac=%d bat=%d (clam=%s acPower=%s)',
-      [wantC, wantB, BoolToStr(clam, True), BoolToStr(onAC, True)]));
+    PowerLog(Format('policy applied: ac=%d bat=%d (lidClosed=%s acPower=%s)',
+      [wantC, wantB, BoolToStr(lidClosed, True), BoolToStr(onAC, True)]));
   end;
 end;
 
