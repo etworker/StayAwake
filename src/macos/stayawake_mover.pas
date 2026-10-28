@@ -372,9 +372,10 @@ begin
   else
     elapsed := 0;
 
-  // Disablesleep profiles are armed persistently per source (so a later lid
-  // close is covered without any race); the battery timer only decides when
-  // to disarm the battery profile and send the sleep.
+  // Disablesleep profiles are RE-ASSERTED every tick while the mode wants
+  // them: this heals any external interference (e.g. another tool flipping
+  // pmset) within one tick. Two short-lived sudo children per 60 s tick is
+  // negligible load, and correctness beats call-count here.
   wantC := Ord(acAwake);
   wantB := Ord(acAwake and (mins > 0) and (not gBatSleepSent));
 

@@ -51,6 +51,7 @@ type
     maLidAllow,
     maAcLidAwake,
     maBatClose,
+    maBat1,
     maAutostart,
     maLangAuto,
     maLangEn,
@@ -114,6 +115,7 @@ const
   SLidAllow: TStrMap = ('Suspend (system default)', '睡眠(系统默认)');
   SAcLidAwake: TStrMap = ('Stay awake (no sleep on close)', '保持运行(合盖不休眠)');
   SBatClose: TStrMap = ('Sleep on close (default)', '合盖睡眠(默认)');
+  SBat1: TStrMap = ('Stay awake 1 min, then sleep', '保持清醒 1 分钟后睡眠');
   SLidAcHeader: TStrMap = ('[On power]', '[接电源]');
   SLidBatHeader: TStrMap = ('[On battery]', '[用电池]');
   SAutoStart: TStrMap = ('Run at Login', '开机自启');
@@ -483,6 +485,7 @@ begin
       AddChild(lid, NewNode(mkSep, maNone, SEmpty, 0));
       AddChild(lid, NewNode(mkHeader, maNone, SLidBatHeader, 0));
       AddChild(lid, NewNode(mkRadio, maBatClose, SBatClose, RG_BAT));
+      AddChild(lid, NewNode(mkRadio, maBat1, SBat1, RG_BAT));
       AddChild(lid, NewNode(mkRadio, maBat5, SBat5, RG_BAT));
       AddChild(lid, NewNode(mkRadio, maBat15, SBat15, RG_BAT));
       AddChild(lid, NewNode(mkRadio, maBat30, SBat30, RG_BAT));
@@ -543,6 +546,7 @@ begin
     maLangEn:      Result := CurrentLangStored = 'en';
     maLangZh:      Result := CurrentLangStored = 'zh';
     maBatClose:    Result := LidBatteryMinutes = 0;
+    maBat1:        Result := LidBatteryMinutes = 1;
     maBat5:        Result := LidBatteryMinutes = 5;
     maBat15:       Result := LidBatteryMinutes = 15;
     maBat30:       Result := LidBatteryMinutes = 30;
@@ -598,6 +602,7 @@ begin
       if Assigned(TrayHooks.RefreshVisual) then
         TrayHooks.RefreshVisual;
     end;
+    maBat1:  WriteConfigValue(LidBatteryMinutesPath, '1');
     maBat5:  WriteConfigValue(LidBatteryMinutesPath, '5');
     maBat15: WriteConfigValue(LidBatteryMinutesPath, '15');
     maBat30: WriteConfigValue(LidBatteryMinutesPath, '30');
