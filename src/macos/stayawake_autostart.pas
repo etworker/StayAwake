@@ -167,7 +167,11 @@ begin
       Exit;
     err := nil;
     objc_msgSend_err(SMService, sel_getUid('registerAndReturnError:'), @err);
-    Exit;
+    // SMAppService refuses unsigned bundles ("code object is not signed at
+    // all" dev builds): fall through to the legacy plist so the toggle still
+    // works. Signed release builds register cleanly and never get here.
+    if err = nil then
+      Exit;
   end;
   if (AutoStartPath <> '') and AutoStartPathMatches then
     Exit;
@@ -179,6 +183,10 @@ begin
   if SMAppServiceAvailable then
   begin
     Result := SMEnabledStatus(objc_msgSend_int(SMService, sel_getUid('status')));
+    if Result then
+      Exit;
+    // Registration may have fallen back to the legacy plist (unsigned app).
+    Result := FileExists(AutoStartPath);
     Exit;
   end;
   Result := FileExists(AutoStartPath);
@@ -190,12 +198,12 @@ var
 begin
   if SMAppServiceAvailable then
   begin
-    if not SMEnabledStatus(objc_msgSend_int(SMService, sel_getUid('status'))) then
-      Exit;
     err := nil;
-    objc_msgSend_err(SMService, sel_getUid('unregisterAndReturnError:'), @err);
-    Exit;
+    if SMEnabledStatus(objc_msgSend_int(SMService, sel_getUid('status'))) then
+      objc_msgSend_err(SMService, sel_getUid('unregisterAndReturnError:'), @err);
   end;
+  // Clean up the legacy plist too: it may exist alongside (unsigned dev
+  // builds) or instead of the SMAppService registration.
   if FileExists(AutoStartPath) then
     DeleteFile(AutoStartPath);
 end;
