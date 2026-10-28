@@ -252,7 +252,7 @@ begin
   LidPolicyApply;
   // The user just picked a lid option while the passwordless component was
   // never installed: guide them through the one-time command.
-  if (LidAcAwake or (LidBatteryMinutes > 0)) and (not LidGuardInstalled) then
+  if (LidAcAwake or (LidBatteryMinutes <> 0)) and (not LidGuardInstalled) then
     ShowLidInstallDialog;
 end;
 

@@ -317,10 +317,11 @@ end;
 
 // ---- Lid policy (per power source) -------------------------------------------
 // block mode: AC closed -> stay awake indefinitely; battery closed -> stay
-// awake for LidBatteryMinutes then sleep (and stay asleep). Disablesleep is
-// applied per source via the passwordless sudoers whitelist; the sleep at
-// timer expiry is `pmset sleepnow` (global, but the machine is on battery
-// at that point).
+// awake for LidBatteryMinutes then sleep (and stay asleep), or forever when
+// LidBatteryMinutes < 0 (until the battery dies). Disablesleep is applied
+// per source via the passwordless sudoers whitelist; the sleep at timer
+// expiry is `pmset sleepnow` (global, but the machine is on battery at that
+// point).
 procedure LidPolicyApply;
 const
   AC_POLL_EVERY = 5;   // ticks between power-source polls (~5 min)
@@ -377,7 +378,7 @@ begin
   // pmset) within one tick. Two short-lived sudo children per 60 s tick is
   // negligible load, and correctness beats call-count here.
   wantC := Ord(acAwake);
-  wantB := Ord(acAwake and (mins > 0) and (not gBatSleepSent));
+  wantB := Ord(acAwake and (mins <> 0) and (not gBatSleepSent));
 
   // Battery timer: elapsed now also counts wall time through sleep, but
   // expiry only fires while closed and on battery.

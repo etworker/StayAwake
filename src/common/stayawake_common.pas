@@ -61,6 +61,7 @@ type
     maBat15,
     maBat30,
     maBat60,
+    maBatNever,
     maAbout,
     maQuit
   );
@@ -127,6 +128,7 @@ const
   SBat15: TStrMap  = ('Stay awake 15 min, then sleep', '保持清醒 15 分钟后睡眠');
   SBat30: TStrMap  = ('Stay awake 30 min, then sleep', '保持清醒 30 分钟后睡眠');
   SBat60: TStrMap  = ('Stay awake 60 min, then sleep', '保持清醒 60 分钟后睡眠');
+  SBatNever: TStrMap = ('Stay awake until battery dies', '盒盖不睡(直到没电关机)');
   SAbout: TStrMap = ('About StayAwake', '关于 StayAwake');
   SQuit: TStrMap = ('Quit', '退出');
   STipWork: TStrMap = ('StayAwake - preventing sleep', 'StayAwake - 防睡中');
@@ -341,8 +343,9 @@ begin
   Result := TrayConfigDir + '/stayawake/lid-battery-mins';
 end;
 
-// Battery lid timer length in minutes; 0 = sleep immediately on close.
-// Junk falls back to 0 (system default), never to an awake-forever value.
+// Battery lid timer length in minutes; 0 = sleep immediately on close,
+// -1 = stay awake until the battery dies. Junk falls back to 0 (system
+// default), never to an awake-forever value.
 function LidBatteryMinutes: Integer;
 var
   v: string;
@@ -351,7 +354,7 @@ begin
   Result := 0;
   v := Trim(ReadConfigValue(LidBatteryMinutesPath, ''));
   Val(v, n, code);
-  if (code = 0) and (n > 0) then
+  if (code = 0) and ((n > 0) or (n = -1)) then
     Result := n;
 end;
 
@@ -490,6 +493,7 @@ begin
       AddChild(lid, NewNode(mkRadio, maBat15, SBat15, RG_BAT));
       AddChild(lid, NewNode(mkRadio, maBat30, SBat30, RG_BAT));
       AddChild(lid, NewNode(mkRadio, maBat60, SBat60, RG_BAT));
+      AddChild(lid, NewNode(mkRadio, maBatNever, SBatNever, RG_BAT));
     end
     else
     begin
@@ -551,6 +555,7 @@ begin
     maBat15:       Result := LidBatteryMinutes = 15;
     maBat30:       Result := LidBatteryMinutes = 30;
     maBat60:       Result := LidBatteryMinutes = 60;
+    maBatNever:    Result := LidBatteryMinutes < 0;
   else
     Result := False;
   end;
@@ -607,6 +612,7 @@ begin
     maBat15: WriteConfigValue(LidBatteryMinutesPath, '15');
     maBat30: WriteConfigValue(LidBatteryMinutesPath, '30');
     maBat60: WriteConfigValue(LidBatteryMinutesPath, '60');
+    maBatNever: WriteConfigValue(LidBatteryMinutesPath, '-1');
     maLangAuto:  ApplyLanguage('');
     maLangEn:    ApplyLanguage('en');
     maLangZh:    ApplyLanguage('zh');

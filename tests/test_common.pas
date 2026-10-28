@@ -169,19 +169,21 @@ begin
   Root := BuildTrayMenu(True, True, True);
   Check('D12b full mac tree has 12 top nodes', CountChildren(Root) = 12);
   Lid := Root^.Sub[2];
-  Check('D12c lid submenu is flat with 10 children', CountChildren(Lid) = 10);
+  Check('D12c lid submenu is flat with 11 children', CountChildren(Lid) = 11);
   Check('D12d ac header + checkbox',
     (Lid^.Sub[0]^.Kind = mkHeader) and (Lid^.Sub[0]^.Action = maNone) and
     (Lid^.Sub[1]^.Kind = mkCheck) and (Lid^.Sub[1]^.Action = maAcLidAwake));
-  Check('D12e bat header + 6 radios (close, 1, 5, ..., 60)',
+  Check('D12e bat header + 7 radios (close, 1, 5, ..., 60, never)',
     (Lid^.Sub[3]^.Kind = mkHeader) and
     (Lid^.Sub[4]^.Kind = mkRadio) and (Lid^.Sub[4]^.Action = maBatClose) and
     (Lid^.Sub[5]^.Action = maBat1) and (Lid^.Sub[9]^.Action = maBat60) and
-    (Lid^.Sub[4]^.RadioGroup = Lid^.Sub[9]^.RadioGroup));
+    (Lid^.Sub[10]^.Action = maBatNever) and
+    (Lid^.Sub[4]^.RadioGroup = Lid^.Sub[10]^.RadioGroup));
   Check('D12f battery labels localized',
     (Lid^.Sub[4]^.Text[tlZh] = '合盖睡眠(默认)') and
     (Lid^.Sub[5]^.Text[tlZh] = '保持清醒 1 分钟后睡眠') and
-    (Lid^.Sub[9]^.Text[tlEn] = 'Stay awake 60 min, then sleep'));
+    (Lid^.Sub[9]^.Text[tlEn] = 'Stay awake 60 min, then sleep') and
+    (Lid^.Sub[10]^.Text[tlZh] = '盒盖不睡(直到没电关机)'));
   FreeTrayMenu(Root);
 end;
 
@@ -266,6 +268,9 @@ begin
   MenuActionInvoke(maBatClose);
   Check('E16b bat close = 0 minutes, radio on', (LidBatteryMinutes = 0) and
     MenuActionState(maBatClose) and not MenuActionState(maBat60));
+  MenuActionInvoke(maBatNever);
+  Check('E16c bat never = -1, radio on', (LidBatteryMinutes = -1) and
+    MenuActionState(maBatNever) and not MenuActionState(maBatClose));
   WriteConfigValue(LidBatteryMinutesPath, 'junk');
   Check('E17 junk minutes falls back to 0', LidBatteryMinutes = 0);
 
