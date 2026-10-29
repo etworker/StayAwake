@@ -304,6 +304,16 @@ begin
   Result := Pos('AC Power', outp) > 0;
 end;
 
+// Mac mini / Mac Studio have no battery (and no lid): the lid policy must
+// not touch pmset there, whatever stale lid-mode files say.
+function HasBattery: Boolean;
+var
+  outp: string;
+begin
+  outp := PopenRead('/usr/bin/pmset -g ps 2>/dev/null');
+  Result := Pos('InternalBattery', outp) > 0;
+end;
+
 // ---- Lid policy (per power source) -------------------------------------------
 // block mode: AC closed -> stay awake indefinitely; battery closed -> stay
 // awake for LidBatteryMinutes then sleep (and stay asleep), or forever when
@@ -329,6 +339,9 @@ begin
     Inc(gTicksSinceACPoll, 0); // slept through; the poll catch-up below
   // is cheap enough to just do this tick
   gLastTickMs := nowMs;
+
+  if not HasBattery then
+    Exit; // desktop: never arm disablesleep, never schedule a lid sleep
 
   acAwake := LidAcAwake;
   mins := LidBatteryMinutes;

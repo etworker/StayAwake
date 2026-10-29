@@ -670,7 +670,11 @@ procedure trayAction(sender: id); message 'trayAction:';
       // applies per-power-source disablesleep via the passwordless sudoers
       // whitelist (guard/install.sh). Apple Silicon only: Intel enforces
       // clamshell sleep at the SMC layer where nothing helps.
-      TrayHooks.HasLid := Pos('arm64', LowerCase(PopenRead('/usr/bin/uname -m 2>/dev/null'))) > 0;
+      // Batteryless Apple Silicon desktops (Mac mini / Mac Studio) have no
+      // lid either: hide the whole lid menu there, not just on Intel.
+      TrayHooks.HasLid :=
+          (Pos('arm64', LowerCase(PopenRead('/usr/bin/uname -m 2>/dev/null'))) > 0)
+              and (Pos('InternalBattery', PopenRead('/usr/bin/pmset -g ps 2>/dev/null')) > 0);
       TrayHooks.HasSleepNow := True;
       TrayHooks.LidPerSource := True;
 

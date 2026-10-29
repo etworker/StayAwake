@@ -444,6 +444,22 @@ end;
 
 // Platform config/hooks must be ready BEFORE the main body starts (the
 // shared core reads config paths at any time); wired via initialization.
+// A battery means a portable machine with a lid. Desktops (no battery, no
+// lid) must not show lid UI or arm the guard, so everything lid-related is
+// gated on this probe.
+function HasBattery: Boolean;
+var
+  sr: TSearchRec;
+  rc: Integer;
+begin
+  Result := False;
+  rc := FindFirst('/sys/class/power_supply/BAT*', faAnyFile, sr);
+  if rc = 0 then begin
+    Result := True;
+    FindClose(sr);
+  end;
+end;
+
 procedure InitPlatformConfig;
 begin
   TrayConfigDir := GetEnvironmentVariable('XDG_CONFIG_HOME');
@@ -455,7 +471,7 @@ begin
   // Language packs ship beside the executable.
   TrayLangPackDir := ExtractFilePath(ExpandFileName(ParamStr(0)));
 
-  TrayHooks.HasLid := True;
+  TrayHooks.HasLid := HasBattery;
   TrayHooks.RefreshVisual := @HookRefreshVisual;
   TrayHooks.AutostartState := @HookAutostartState;
   TrayHooks.AutostartRequest := @HookAutostartRequest;
@@ -493,7 +509,8 @@ begin
   TraySetVisual;
   // Self-heal: if the user opted into "Do Nothing" and the guard service is
   // not running (e.g. fresh login with a stale unit), bring it back up.
-  if LidMode = 'block' then
+  // Batteryless machines never touch the guard at all.
+  if TrayHooks.HasLid and (LidMode = 'block') then
     HookApplyLidMode;
   gtk_main;
 end;

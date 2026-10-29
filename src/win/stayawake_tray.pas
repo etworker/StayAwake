@@ -320,6 +320,11 @@ begin
   // Language packs ship beside the executable.
   TrayLangPackDir := ExtractFilePath(ExpandFileName(ParamStr(0)));
 
+  // No lid menu on Windows: the lid-close delay feature is not implemented
+  // here (preventing the system's own lid action needs a one-time admin
+  // setting). Showing a menu that cannot act would be worse than none, on
+  // laptops and batteryless desktops alike. Wire HasLid to a
+  // GetSystemPowerStatus battery probe if/when the feature lands.
   TrayHooks.HasLid := False;
   TrayHooks.RefreshVisual := @HookRefreshVisual;
   TrayHooks.AutostartState := @HookAutostartState;
