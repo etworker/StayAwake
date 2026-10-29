@@ -1,7 +1,8 @@
 unit stayawake_autostart;
 
-{$mode objfpc}{$H+}
-{$modeswitch objectivec1}
+{$MODE objfpc}
+{$H+}
+{$MODESWITCH objectivec1}
 
 interface
 
@@ -35,6 +36,7 @@ function sel_getUid(name: PAnsiChar): SEL; cdecl; external 'objc' name 'sel_getU
 function objc_msgSend(obj: id; sel: SEL): id; cdecl; external 'objc' name 'objc_msgSend';
 function objc_msgSend_int(obj: id; sel: SEL): NSInteger; cdecl; external 'objc' name 'objc_msgSend';
 function objc_msgSend_err(obj: id; sel: SEL; err: Pointer): id; cdecl; external 'objc' name 'objc_msgSend';
+function objc_msgSend_p(obj: id; sel: SEL; p: Pointer): id; cdecl; external 'objc' name 'objc_msgSend';
 
 var
   SMHandle: TLibHandle = NilHandle;
@@ -49,16 +51,12 @@ end;
 
 function SMAppServiceAvailable: Boolean;
 begin
-  if not SMClassChecked then
-  begin
+  if not SMClassChecked then begin
     SMClassChecked := True;
-    SMHandle := LoadLibrary(
-      '/System/Library/Frameworks/ServiceManagement.framework/ServiceManagement');
-    if SMHandle <> NilHandle then
-    begin
+    SMHandle := LoadLibrary('/System/Library/Frameworks/ServiceManagement.framework/ServiceManagement');
+    if SMHandle <> NilHandle then begin
       if objc_getClass('SMAppService') <> nil then
-        SMService := objc_msgSend(objc_getClass('SMAppService'),
-          sel_getUid('mainAppService'));
+        SMService := objc_msgSend(objc_getClass('SMAppService'), sel_getUid('mainAppService'));
     end;
   end;
   Result := SMService <> nil;
@@ -92,15 +90,12 @@ begin
   try
     try
       sl.LoadFromFile(Path);
-      for i := 0 to sl.Count - 1 do
-      begin
+      for i := 0 to sl.Count - 1 do begin
         s := Trim(sl[i]);
-        if (Pos('<string>', s) > 0) and (Pos('</string>', s) > 0) then
-        begin
+        if (Pos('<string>', s) > 0) and (Pos('</string>', s) > 0) then begin
           s := Copy(s, Pos('<string>', s) + 8, MaxInt);
           s := Copy(s, 1, Pos('</string>', s) - 1);
-          if SameText(s, ExePath) then
-          begin
+          if SameText(s, ExePath) then begin
             Result := True;
             Exit;
           end;
@@ -115,11 +110,12 @@ begin
   end;
 end;
 
-procedure LegacyWriteAutoStartFile;
+function LegacyWriteAutoStartFile: Boolean;
 var
   Path: string;
   sl: TStringList;
 begin
+  Result := False;
   Path := AutoStartPath;
   if Path = '' then
     Exit;
@@ -143,10 +139,11 @@ begin
     sl.Add('</plist>');
     try
       sl.SaveToFile(Path);
+      Result := True;
     except
       // The login-item cannot be registered in this environment (e.g. the
-      // LaunchAgents directory is not writable). That must not crash the app;
-      // StayAwake still runs normally, just without auto-start.
+      // LaunchAgents directory is not writable). Writing must not crash the
+      // app; the caller decides whether to surface the failure.
       on E: Exception do
         ;
     end;
@@ -155,30 +152,63 @@ begin
   end;
 end;
 
+// Last-resort reminder when neither SMAppService nor the plist fallback
+// could register the login item: point at the manual route. No commands to
+// copy - manual login items are just a System Settings toggle.
+procedure ShowAutoStartFailHint;
+const
+  ATitle: TStrMap = ('开机自启设置失败', 'Auto-start setup failed');
+  AInfo: TStrMap = (
+      '无法写入登录项。请在 系统设置 → 通用 → 登录项 中手动添加 StayAwake。',
+      'Could not register the login item. Add StayAwake manually in System Settings > General > Login Items.'
+  );
+
+  function NSStr(const s: string): id;
+  begin
+    Result := objc_msgSend_p(objc_getClass('NSString'), sel_getUid('stringWithUTF8String:'), PChar(s));
+  end;
+
+var
+  alert: id;
+begin
+  alert := objc_msgSend(objc_msgSend(objc_getClass('NSAlert'), sel_getUid('alloc')), sel_getUid('init'));
+  objc_msgSend_p(alert, sel_getUid('setMessageText:'), NSStr(L(ATitle)));
+  objc_msgSend_p(alert, sel_getUid('setInformativeText:'), NSStr(L(AInfo)));
+  objc_msgSend(alert, sel_getUid('runModal'));
+  objc_msgSend(alert, sel_getUid('release'));
+end;
+
 // ---- Public API -------------------------------------------------------------
 
 procedure EnsureAutoStart;
 var
   err: Pointer;
 begin
-  if SMAppServiceAvailable then
-  begin
+  if SMAppServiceAvailable then begin
     if SMEnabledStatus(objc_msgSend_int(SMService, sel_getUid('status'))) then
       Exit;
     err := nil;
     objc_msgSend_err(SMService, sel_getUid('registerAndReturnError:'), @err);
-    Exit;
+    // SMAppService refuses unsigned bundles ("code object is not signed at
+    // all" dev builds): fall through to the legacy plist so the toggle still
+    // works. Signed release builds register cleanly and never get here.
+    if err = nil then
+      Exit;
   end;
   if (AutoStartPath <> '') and AutoStartPathMatches then
     Exit;
-  LegacyWriteAutoStartFile;
+  if not LegacyWriteAutoStartFile then
+    ShowAutoStartFailHint;
 end;
 
 function IsAutoStartEnabled: Boolean;
 begin
-  if SMAppServiceAvailable then
-  begin
+  if SMAppServiceAvailable then begin
     Result := SMEnabledStatus(objc_msgSend_int(SMService, sel_getUid('status')));
+    if Result then
+      Exit;
+    // Registration may have fallen back to the legacy plist (unsigned app).
+    Result := FileExists(AutoStartPath);
     Exit;
   end;
   Result := FileExists(AutoStartPath);
@@ -188,14 +218,13 @@ procedure DisableAutoStart;
 var
   err: Pointer;
 begin
-  if SMAppServiceAvailable then
-  begin
-    if not SMEnabledStatus(objc_msgSend_int(SMService, sel_getUid('status'))) then
-      Exit;
+  if SMAppServiceAvailable then begin
     err := nil;
-    objc_msgSend_err(SMService, sel_getUid('unregisterAndReturnError:'), @err);
-    Exit;
+    if SMEnabledStatus(objc_msgSend_int(SMService, sel_getUid('status'))) then
+      objc_msgSend_err(SMService, sel_getUid('unregisterAndReturnError:'), @err);
   end;
+  // Clean up the legacy plist too: it may exist alongside (unsigned dev
+  // builds) or instead of the SMAppService registration.
   if FileExists(AutoStartPath) then
     DeleteFile(AutoStartPath);
 end;

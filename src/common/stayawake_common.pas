@@ -78,6 +78,7 @@ type
       maBat15,
       maBat30,
       maBat60,
+      maBatNever,
       maAbout,
       maQuit
   );
@@ -308,7 +309,7 @@ const
   // Language packs override per key; a key missing from the active pack
   // falls back to the built-in English line, so a partial translation can
   // never blank out the UI.
-  StrKeys: array[0..22] of string = (
+  StrKeys: array[0..23] of string = (
       'SAwake',
       'SLidTitle',
       'SLidTitleMac',
@@ -331,9 +332,10 @@ const
       'SBat5',
       'SBat15',
       'SBat30',
-      'SBat60'
+      'SBat60',
+      'SBatNever'
   );
-  StrEn: array[0..22] of string = (
+  StrEn: array[0..23] of string = (
       'Keep Awake (block idle sleep)',
       'When the lid is closed',
       'Lid Close on AC Power',
@@ -356,7 +358,8 @@ const
       'Stay awake 5 min, then sleep',
       'Stay awake 15 min, then sleep',
       'Stay awake 30 min, then sleep',
-      'Stay awake 60 min, then sleep'
+      'Stay awake 60 min, then sleep',
+      'Stay awake until battery dies'
   );
 
 var
@@ -386,8 +389,9 @@ begin
   Result := TrayConfigDir + '/stayawake/lid-battery-mins';
 end;
 
-// Battery lid timer length in minutes; 0 = sleep immediately on close.
-// Junk falls back to 0 (system default), never to an awake-forever value.
+// Battery lid timer length in minutes; 0 = sleep immediately on close,
+// -1 = stay awake until the battery dies. Junk falls back to 0 (system
+// default), never to an awake-forever value.
 function LidBatteryMinutes: Integer;
 var
   v: string;
@@ -396,7 +400,7 @@ begin
   Result := 0;
   v := Trim(ReadConfigValue(LidBatteryMinutesPath, ''));
   Val(v, n, code);
-  if (code = 0) and (n > 0) then
+  if (code = 0) and ((n > 0) or (n = -1)) then
     Result := n;
 end;
 
@@ -730,6 +734,7 @@ begin
       AddChild(lid, NewNode(mkRadio, maBat15, 'SBat15', RG_BAT));
       AddChild(lid, NewNode(mkRadio, maBat30, 'SBat30', RG_BAT));
       AddChild(lid, NewNode(mkRadio, maBat60, 'SBat60', RG_BAT));
+      AddChild(lid, NewNode(mkRadio, maBatNever, 'SBatNever', RG_BAT));
     end
     else begin
       // Guard style (Linux): block / allow radios.
@@ -809,6 +814,7 @@ begin
     maBat15: Result := LidBatteryMinutes = 15;
     maBat30: Result := LidBatteryMinutes = 30;
     maBat60: Result := LidBatteryMinutes = 60;
+    maBatNever: Result := LidBatteryMinutes < 0;
   else
     Result := False;
   end;
@@ -868,6 +874,7 @@ begin
     maBat15: WriteConfigValue(LidBatteryMinutesPath, '15');
     maBat30: WriteConfigValue(LidBatteryMinutesPath, '30');
     maBat60: WriteConfigValue(LidBatteryMinutesPath, '60');
+    maBatNever: WriteConfigValue(LidBatteryMinutesPath, '-1');
     maLangAuto: ApplyLanguage('');
     maLangPack1: ApplyLanguage(LangSlotCode(1));
     maLangPack2: ApplyLanguage(LangSlotCode(2));
