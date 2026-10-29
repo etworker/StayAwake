@@ -43,12 +43,37 @@ type
     ParentMenu: HMENU;
   end;
 
+const
+  // Lid switch power notification (Win8+). Registered on the tray window;
+  // WM_POWERBROADCAST/PBT_POWERSETTINGCHANGE carries a DWORD payload
+  // (0 = closed, nonzero = open).
+  WM_POWERBROADCAST_LID = $0218;
+  PBT_POWERSETTINGCHANGE_LID = $8012;
+  GUID_LIDSWITCH_STATE_CHANGE: TGUID = '{BA3E0F4D-B817-4094-A2D1-D56379E6A0F3}';
+
+type
+  // Variable-length WM_POWERBROADCAST payload: GUID + length + data.
+  TPowerBcastSetting = record
+    PowerSetting: TGUID;
+    DataLength: DWORD;
+    Data: array[0..3] of Byte;
+  end;
+  PPowerBcastSetting = ^TPowerBcastSetting;
+
+type
+  TRegisterPowerSettingNotification =
+      function(hRecipient: HWND; const PowerSetting: TGUID; Flags: DWORD): THandle; stdcall;
+  TUnregisterPowerSettingNotification = function(h: THandle): LongBool; stdcall;
+
 var
   TrayHwnd: HWND = 0;
   TrayIcon: NativeUInt = 0;
   TrayMenu: HMENU = 0;
   MenuRoot: PMenuNode = nil;
   Bindings: array of TItemBinding;
+  LidNotify: THandle = 0;
+  RegisterPowerSettingNotificationW: TRegisterPowerSettingNotification = nil;
+  UnregisterPowerSettingNotificationW: TUnregisterPowerSettingNotification = nil;
 
 function CreateIconFromPixels(const Pixels: TIconPixels): NativeUInt; forward;
 
@@ -284,7 +309,20 @@ begin
         WM_LBUTTONUP, WM_RBUTTONUP, WM_CONTEXTMENU: ShowTrayMenu;
       end;
     WM_COMMAND: MenuActionInvoke(TMenuAction(wParam and $FFFF));
-    WM_DESTROY: PostQuitMessage(0);
+    WM_POWERBROADCAST_LID:
+      if wParam = PBT_POWERSETTINGCHANGE_LID then begin
+        with PPowerBcastSetting(lParam)^ do
+          if (DataLength >= 4) and CompareMem(@PowerSetting, @GUID_LIDSWITCH_STATE_CHANGE, SizeOf(TGUID)) then
+            NotifyLidState(PDWORD(@Data[0])^ = 0);
+        Result := 1; // handled without DefWindowProc
+      end;
+    WM_DESTROY: begin
+      if LidNotify <> 0 then begin
+        UnregisterPowerSettingNotificationW(LidNotify);
+        LidNotify := 0;
+      end;
+      PostQuitMessage(0);
+    end;
   else
     Result := DefWindowProc(hwnd, msg, wParam, lParam);
   end;
@@ -301,6 +339,18 @@ begin
     EnsureAutoStart
   else
     DisableAutoStart;
+end;
+
+// A battery means a portable machine with a lid: desktops report
+// "no battery" (flag bit $80) and an unknown percentage (255).
+function HasBattery: Boolean;
+var
+  S: TSystemPowerStatus;
+begin
+  Result := False;
+  if not GetSystemPowerStatus(S) then
+    Exit;
+  Result := ((S.BatteryFlag and $80) = 0) and (S.BatteryLifePercent <> 255);
 end;
 
 // ---- Entry point ------------------------------------------------------------
@@ -320,12 +370,12 @@ begin
   // Language packs ship beside the executable.
   TrayLangPackDir := ExtractFilePath(ExpandFileName(ParamStr(0)));
 
-  // No lid menu on Windows: the lid-close delay feature is not implemented
-  // here (preventing the system's own lid action needs a one-time admin
-  // setting). Showing a menu that cannot act would be worse than none, on
-  // laptops and batteryless desktops alike. Wire HasLid to a
-  // GetSystemPowerStatus battery probe if/when the feature lands.
-  TrayHooks.HasLid := False;
+  // Lid menu on battery-equipped machines only (a battery means a lid):
+  // desktops keep the plain tray. The kernel lid action must already be
+  // "Do nothing" (one-time admin via powercfg) for the policy to see lid
+  // events; TrayCreate registers the switch notification when it applies.
+  TrayHooks.HasLid := HasBattery;
+  TrayHooks.LidPerSource := True;
   TrayHooks.RefreshVisual := @HookRefreshVisual;
   TrayHooks.AutostartState := @HookAutostartState;
   TrayHooks.AutostartRequest := @HookAutostartRequest;
@@ -367,6 +417,19 @@ begin
           nil
       );
   ShowWindow(TrayHwnd, SW_HIDE);
+
+  // Lid switch events (harmless no-op on desktops / when unavailable).
+  if HasBattery then begin
+    Pointer(RegisterPowerSettingNotificationW) :=
+        GetProcAddress(GetModuleHandle('user32'), 'RegisterPowerSettingNotification');
+    Pointer(UnregisterPowerSettingNotificationW) :=
+        GetProcAddress(GetModuleHandle('user32'), 'UnregisterPowerSettingNotification');
+    if Assigned(RegisterPowerSettingNotificationW) then begin
+      LidNotify := RegisterPowerSettingNotificationW(TrayHwnd, GUID_LIDSWITCH_STATE_CHANGE, 0);
+      if LidNotify = 0 then
+        stayawake_mover.LidLog('RegisterPowerSettingNotification failed');
+    end;
+  end;
 
   MenuRoot := BuildTrayMenu(TrayHooks.HasLid, TrayHooks.HasSleepNow, False);
   TrayMenu := CreatePopupMenu;
