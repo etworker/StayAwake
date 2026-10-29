@@ -1,0 +1,17 @@
+# StayAwake 语言包：简体中文。
+# 与可执行文件放在同一目录。添加新语言：复制本文件，重命名为
+# stayawake.<代码>.lang（例如 stayawake.de.lang），翻译右侧文本即可，
+# 菜单会自动列出发现的语言（重启后生效）。
+name=中文
+SAwake=保持清醒(阻止闲置睡眠)
+SLidTitle=合盖行为(接电源时)
+SLidBlock=不动作(守卫拦截睡眠)
+SLidAllow=睡眠(系统默认)
+SAutoStart=开机自启
+SLangTitle=语言 / Language
+SLangAuto=跟随系统
+SAbout=关于 StayAwake
+SQuit=退出
+STipWork=StayAwake - 防睡中
+STipPause=StayAwake - 已暂停
+SAboutDesc=防止系统因「闲置」而睡眠 / 熄屏 / 锁屏（每 %d 秒移动一次鼠标）。

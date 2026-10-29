@@ -64,4 +64,6 @@ if not "%RC%"=="0" (
   echo Build failed.
   exit /b 1
 )
+rem Ship the language packs beside the executable (the runtime scans its dir).
+if exist "%ROOT%lang" copy /y "%ROOT%lang\*.lang" "%OUT%" >nul
 echo Build OK: %OUT%\stayawake.exe

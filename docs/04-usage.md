@@ -30,11 +30,12 @@ tar xzf stayawake-linux-x86_64.tar.gz
 
 - **保持清醒 (阻止闲置睡眠)**：勾选 = 阻止空闲睡眠/熄屏/锁屏；取消 = 系统按自然策略睡眠。启动默认为勾选，切换实时生效；
 - **合盖行为(接电源时)**（Linux / macOS）：「不动作(守卫拦截睡眠)」/「睡眠(系统默认)」二选一，即点即生效；电池合盖始终维持系统默认；
-- **语言 / Language**：跟随系统 / English / 中文。切换后所有菜单文字、托盘悬浮提示、关于对话框立即更新；
+- **语言 / Language**：子菜单自动列出发现的语言包（默认随附 English / 中文）。切换后所有菜单文字、托盘悬浮提示、关于对话框立即更新；
+- **添加语言**：复制一份语言包改名为 `stayawake.<代码>.lang`（如 `stayawake.de.lang`），翻译右侧的值，放入**用户语言包目录**并重启，菜单自动出现该语言：Linux `~/.config/stayawake/langs/`、Windows `%APPDATA%\stayawake\langs\`、macOS `~/Library/Application Support/stayawake/langs/`（此目录更新应用不会丢失）。同名代码会覆盖随附语言包；缺失的键自动回退内置英文，不完整的翻译不会出现空白。文件编码支持 UTF-8（推荐，可有/可无 BOM）与系统 ANSI 代码页（如简体中文 Windows 下的 GB2312/GBK），按内容自动识别。随附语言包则位于应用目录（Windows/Linux 为 exe 旁，macOS 为 .app 内 `Contents/Resources`）；
 - **开机自启**：勾选后登录时自动运行。三平台分别为：Windows 注册表 Run 键、Linux XDG autostart、macOS 登录项（系统设置 → 通用 → 登录项 中可见）；
 - **关于 / 退出**。
 
-> macOS 顶栏图标为 template 渲染：深色 / 浅色菜单栏下自动反色，睁眼 = 激活，闭眼 = 暂停。
+> macOS 顶栏图标为全彩渲染（与 Windows/Linux 同一套绿色眼睛）：睁眼 = 激活，闭眼（灰色）= 暂停。
 
 ## 配置文件
 

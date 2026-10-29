@@ -1,0 +1,17 @@
+# StayAwake language pack: English (built-in fallback).
+# Ship this file next to the executable. To add a language, copy this file,
+# rename it to stayawake.<code>.lang (e.g. stayawake.de.lang) and translate
+# the values. The menu lists every pack found automatically (after a restart).
+name=English
+SAwake=Keep Awake (block idle sleep)
+SLidTitle=Lid Close on AC Power
+SLidBlock=Do Nothing (Guard blocks sleep)
+SLidAllow=Suspend (system default)
+SAutoStart=Run at Login
+SLangTitle=Language
+SLangAuto=Follow System
+SAbout=About StayAwake
+SQuit=Quit
+STipWork=StayAwake - preventing sleep
+STipPause=StayAwake - paused
+SAboutDesc=Prevents idle sleep by moving the mouse every %d seconds.

@@ -13,15 +13,15 @@
 
 | 平台 | 资产 |
 | ---- | ---- |
-| Windows | `stayawake-win64.exe`（推荐）、`stayawake-win32.exe` |
-| macOS | `StayAwake-macos-arm64.zip`（Apple Silicon）、`StayAwake-macos-x86_64.zip`（Intel） |
-| Linux | `stayawake-linux-x86_64.tar.gz`、`stayawake-linux-aarch64.tar.gz` |
+| Windows | `stayawake-win64.exe`（推荐）、`stayawake-win32.exe`，加 `stayawake.en.lang` / `stayawake.zh.lang`（与 exe 放同目录） |
+| macOS | `StayAwake-macos-arm64.zip`（Apple Silicon）、`StayAwake-macos-x86_64.zip`（Intel），语言包已内置 .app |
+| Linux | `stayawake-linux-x86_64.tar.gz`、`stayawake-linux-aarch64.tar.gz`（已含语言包） |
 
 安装与使用见 [docs/04-usage.md](docs/04-usage.md)。
 
 ## 功能速览
 
-- 托盘菜单：**保持清醒**开关、**开机自启**开关、**语言**（跟随系统 / English / 中文）、关于、退出——点击图标本身不会静默改变任何行为；
+- 托盘菜单：**保持清醒**开关、**开机自启**开关、**语言**（自动列出语言包，默认 English / 中文，可复制语言包文件添加新语言）、关于、退出——点击图标本身不会静默改变任何行为；
 - **合盖行为(接电源时)**子菜单：Linux 一键切换（用户级守卫，免 sudo）；macOS 为引导式管理员命令（`sudo pmset disablesleep`，一次性）；Windows 不提供（系统策略修改需管理员）；
 - 启动即激活；暂停立即生效；所有设置即时持久化；
 - 单实例；全部功能免 root / 免管理员。

@@ -13,6 +13,7 @@ uses
   SysUtils,
   Classes,
   stayawake_common,
+  stayawake_autostart,
   ctypes,
   gtk2,
   glib2,
@@ -30,7 +31,7 @@ type
   TItemBinding = record
     Node: PMenuNode;
     Widget: PGtkWidget;
-    Handler: guint;      // 'toggled'/'activate' handler, blocked during syncs
+    Handler: guint; // 'toggled'/'activate' handler, blocked during syncs
   end;
 
 var
@@ -114,20 +115,14 @@ begin
           0,
           GTK_MESSAGE_INFO,
           GTK_BUTTONS_OK,
-          PChar(
-              AboutText
-                  + #10
-                  + 'Linux:合盖行为可按电源状态在托盘菜单中切换。'
-          )
+          PChar(AboutText + #10 + 'Linux:合盖行为可按电源状态在托盘菜单中切换。')
       );
   // Replace the generic info icon with the app eye (same artwork as tray).
   // FPC 3.2.2 bindings lack gtk_message_dialog_set_image; the "image"
   // GObject property is the same thing.
   pb := MakePixbufSized(96);
-  if pb <> nil then
-  begin
-    g_object_set(G_OBJECT(dlg), 'image',
-      gtk_image_new_from_pixbuf(pb), nil);
+  if pb <> nil then begin
+    g_object_set(G_OBJECT(dlg), 'image', gtk_image_new_from_pixbuf(pb), nil);
     g_object_unref(pb);
   end;
   gtk_dialog_run(GTK_DIALOG(dlg));
@@ -168,18 +163,18 @@ var
   sub, item: PGtkWidget;
   group: PGSList;
   handler: guint;
-  Groups: array of record Id: Integer; List: PGSList; end;
+  Groups: array of record
+    Id: Integer;
+    List: PGSList;
+  end;
   gi: Integer;
 begin
   SetLength(Groups, 0);
-  for i := 0 to High(Parent^.Sub) do
-  begin
+  for i := 0 to High(Parent^.Sub) do begin
     node := Parent^.Sub[i];
     case node^.Kind of
-      mkSep:
-        gtk_menu_shell_append(GTK_MENU_SHELL(Dest), gtk_separator_menu_item_new);
-      mkSubmenu:
-      begin
+      mkSep: gtk_menu_shell_append(GTK_MENU_SHELL(Dest), gtk_separator_menu_item_new);
+      mkSubmenu: begin
         sub := gtk_menu_new;
         FillMenu(sub, node);
         item := gtk_menu_item_new_with_label(PChar(L(node^.Text)));
@@ -187,14 +182,11 @@ begin
         gtk_widget_show_all(sub);
         gtk_menu_shell_append(GTK_MENU_SHELL(Dest), item);
       end;
-      mkRadio:
-      begin
+      mkRadio: begin
         group := nil;
         gi := Length(Groups) - 1;
-        while gi >= 0 do
-        begin
-          if Groups[gi].Id = node^.RadioGroup then
-          begin
+        while gi >= 0 do begin
+          if Groups[gi].Id = node^.RadioGroup then begin
             group := Groups[gi].List;
             Break;
           end;
@@ -211,26 +203,21 @@ begin
         end;
         gtk_menu_shell_append(GTK_MENU_SHELL(Dest), item);
         handler := g_signal_connect(item, 'toggled', TGCallback(@MenuSignalProc), nil);
-        g_object_set_data(G_OBJECT(item), 'sa_action',
-          gpointer(PtrUInt(Ord(node^.Action))));
+        g_object_set_data(G_OBJECT(item), 'sa_action', gpointer(PtrUInt(Ord(node^.Action))));
         Bind(node, item, handler);
       end;
-      mkCheck:
-      begin
+      mkCheck: begin
         item := gtk_check_menu_item_new_with_label(PChar(L(node^.Text)));
         gtk_menu_shell_append(GTK_MENU_SHELL(Dest), item);
         handler := g_signal_connect(item, 'toggled', TGCallback(@MenuSignalProc), nil);
-        g_object_set_data(G_OBJECT(item), 'sa_action',
-          gpointer(PtrUInt(Ord(node^.Action))));
+        g_object_set_data(G_OBJECT(item), 'sa_action', gpointer(PtrUInt(Ord(node^.Action))));
         Bind(node, item, handler);
       end;
-      mkItem:
-      begin
+      mkItem: begin
         item := gtk_menu_item_new_with_label(PChar(L(node^.Text)));
         gtk_menu_shell_append(GTK_MENU_SHELL(Dest), item);
         handler := g_signal_connect(item, 'activate', TGCallback(@MenuSignalProc), nil);
-        g_object_set_data(G_OBJECT(item), 'sa_action',
-          gpointer(PtrUInt(Ord(node^.Action))));
+        g_object_set_data(G_OBJECT(item), 'sa_action', gpointer(PtrUInt(Ord(node^.Action))));
         Bind(node, item, handler);
       end;
     end;
@@ -247,11 +234,9 @@ begin
   for i := 0 to High(Bindings) do
     with Bindings[i] do
       case Node^.Kind of
-        mkCheck, mkRadio:
-        begin
+        mkCheck, mkRadio: begin
           g_signal_handler_block(Widget, Handler);
-          gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(Widget),
-            MenuActionState(Node^.Action));
+          gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(Widget), MenuActionState(Node^.Action));
           g_signal_handler_unblock(Widget, Handler);
         end;
       end;
@@ -309,6 +294,19 @@ begin
   ShowMenuAt(status_icon, button, activate_time);
 end;
 
+function HookAutostartState: Boolean; cdecl;
+begin
+  Result := IsAutoStartEnabled;
+end;
+
+procedure HookAutostartRequest(AEnable: Boolean); cdecl;
+begin
+  if AEnable then
+    EnsureAutoStart
+  else
+    DisableAutoStart;
+end;
+
 // ---- Entry point ------------------------------------------------------------
 
 // Platform config/hooks must be ready BEFORE the main body starts (the
@@ -316,15 +314,18 @@ end;
 procedure InitPlatformConfig;
 begin
   TrayConfigDir := GetEnvironmentVariable('XDG_CONFIG_HOME');
-  if TrayConfigDir = '' then
-  begin
+  if TrayConfigDir = '' then begin
     TrayConfigDir := GetEnvironmentVariable('HOME');
     if TrayConfigDir <> '' then
       TrayConfigDir := TrayConfigDir + '/.config';
   end;
+  // Language packs ship beside the executable.
+  TrayLangPackDir := ExtractFilePath(ExpandFileName(ParamStr(0)));
 
   TrayHooks.HasLid := True;
   TrayHooks.RefreshVisual := @HookRefreshVisual;
+  TrayHooks.AutostartState := @HookAutostartState;
+  TrayHooks.AutostartRequest := @HookAutostartRequest;
   TrayHooks.ApplyAwake := @HookApplyAwake;
   TrayHooks.ApplyLidMode := @HookApplyLidMode;
   TrayHooks.ApplyLanguage := @HookApplyLanguage;

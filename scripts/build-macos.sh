@@ -23,6 +23,7 @@ set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="$ROOT/src"
 OUT="$ROOT/out/macos"
+LANGDIR="$ROOT/lang"
 FPC="${FPC:-fpc}"
 
 # Single source of truth for the version is APP_VERSION in
@@ -122,6 +123,12 @@ build_macos_arch() {
 </dict>
 </plist>
 PLIST
+  # Language packs ship inside the bundle (Contents/Resources), where the
+  # runtime scans for them.
+  if [ -d "$LANGDIR" ]; then
+    mkdir -p "$app/Contents/Resources"
+    cp "$LANGDIR"/stayawake.*.lang "$app/Contents/Resources/" 2>/dev/null
+  fi
   echo "==> built: $app"
   return 0
 }

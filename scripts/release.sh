@@ -30,15 +30,27 @@ WIN32="$OUT/windows/i386/stayawake.exe"
 cp "$WIN64" "$TMP/stayawake-win64.exe"
 cp "$WIN32" "$TMP/stayawake-win32.exe"
 
-# --- Linux tarballs (optional; built by ./scripts/package-linux.sh) ----------
+# --- Language packs (users drop them beside the executable) -----------------
 set -- "$TMP/stayawake-win64.exe" "$TMP/stayawake-win32.exe"
+if [ -d "$ROOT/lang" ]; then
+  for f in "$ROOT"/lang/stayawake.*.lang; do
+    [ -f "$f" ] || continue
+    cp "$f" "$TMP/"
+    set -- "$@" "$TMP/$(basename "$f")"
+    echo "==> staged lang pack: $(basename "$f")"
+  done
+fi
+
+# --- Linux tarballs (optional; built by ./scripts/package-linux.sh) ----------
+Tarballs=0
 for f in "$OUT"/linux/stayawake-linux-*.tar.gz; do
   [ -f "$f" ] || continue
   cp "$f" "$TMP/"
   set -- "$@" "$TMP/$(basename "$f")"
+  Tarballs=$((Tarballs + 1))
   echo "==> staged linux asset: $(basename "$f")"
 done
-if [ "$#" -le 2 ]; then
+if [ "$Tarballs" -eq 0 ]; then
   echo "warning: no Linux tarballs staged (run ./scripts/package-linux.sh first)" >&2
 fi
 

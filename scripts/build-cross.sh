@@ -67,6 +67,10 @@ build_win() { # <cpu> <target-os> <os-rtl-dir> <cpu-rtl-dir> <out-subdir>
       -Fu"$RTL/objpas" -Fu"$RTL/objpas/classes" -Fu"$RTL/objpas/sysutils" \
       -Fu"$PKG/fcl-base/src" -Fu"$PKG/fcl-registry/src" \
       -FU"$dest/units" -FE"$dest" stayawake.lpr )
+  # Ship the language packs beside the binary.
+  if [ -d "$ROOT/lang" ]; then
+    cp "$ROOT"/lang/stayawake.*.lang "$dest"/
+  fi
 }
 
 # Make sure the shared exe icon exists (the .rc references ../assets/stayawake.ico).

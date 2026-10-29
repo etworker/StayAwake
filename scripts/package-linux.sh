@@ -44,6 +44,10 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE/lid-guard"
 
 cp "$DEST/stayawake" "$STAGE/stayawake"
+# Language packs ride along at the archive root (beside the binary).
+if [ -d "$ROOT/lang" ]; then
+  cp "$ROOT"/lang/stayawake.*.lang "$STAGE"/
+fi
 for f in ac-lid-guard.sh ac-lid-guard.service install.sh uninstall.sh; do
   cp "$ROOT/src/linux/lid-guard/$f" "$STAGE/lid-guard/$f"
 done

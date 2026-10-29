@@ -11,6 +11,7 @@ set -e
 
 SRC="$(cd "$(dirname "$0")/.." && pwd)/src"
 OUT="$(cd "$(dirname "$0")/.." && pwd)/out/linux"
+LANGDIR="$(cd "$(dirname "$0")/.." && pwd)/lang"
 FPC="${FPC:-fpc}"
 
 MODE="${1:-}"
@@ -38,4 +39,8 @@ fi
 DEST="$OUT/$ARCH"
 mkdir -p "$DEST/units"
 cd "$SRC"
-exec "$FPC" -Mobjfpc -O2 -Xs -P"$FPCARCH" -Fucommon -Fulinux -FU"$DEST/units" -FE"$DEST" stayawake.lpr
+"$FPC" -Mobjfpc -O2 -Xs -P"$FPCARCH" -Fucommon -Fulinux -FU"$DEST/units" -FE"$DEST" stayawake.lpr
+# Ship the language packs beside the binary (the runtime scans its own dir).
+if [ -d "$LANGDIR" ]; then
+  cp "$LANGDIR"/stayawake.*.lang "$DEST"/
+fi

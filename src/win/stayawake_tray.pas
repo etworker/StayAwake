@@ -104,8 +104,7 @@ begin
   for i := 0 to High(Bindings) do
     with Bindings[i] do
       case Node^.Kind of
-        mkCheck, mkRadio:
-        begin
+        mkCheck, mkRadio: begin
           if MenuActionState(Node^.Action) then
             CheckMenuItem(ParentMenu, Ord(Node^.Action), MF_BYCOMMAND or MF_CHECKED)
           else
@@ -127,11 +126,15 @@ var
   i: Integer;
   wide: WideString;
 begin
-  for i := 0 to High(Bindings) do
-  begin
+  for i := 0 to High(Bindings) do begin
     wide := UTF8Decode(L(Bindings[i].Node^.Text));
-    ModifyMenuW(Bindings[i].ParentMenu, Ord(Bindings[i].Node^.Action),
-      MF_BYCOMMAND or MF_STRING, Ord(Bindings[i].Node^.Action), PWideChar(wide));
+    ModifyMenuW(
+        Bindings[i].ParentMenu,
+        Ord(Bindings[i].Node^.Action),
+        MF_BYCOMMAND or MF_STRING,
+        Ord(Bindings[i].Node^.Action),
+        PWideChar(wide)
+    );
   end;
   HookRefreshVisual;
 end;
@@ -141,7 +144,7 @@ var
   Msg, Title: WideString;
 begin
   Msg := UTF8Decode(AboutText);
-  Title := UTF8Decode(L(SAbout));
+  Title := UTF8Decode(L('SAbout'));
   MessageBoxW(0, PWideChar(Msg), PWideChar(Title), MB_OK or MB_ICONINFORMATION);
 end;
 
@@ -223,22 +226,17 @@ var
   node: PMenuNode;
   sub: HMENU;
 begin
-  for i := 0 to High(Parent^.Sub) do
-  begin
+  for i := 0 to High(Parent^.Sub) do begin
     node := Parent^.Sub[i];
     case node^.Kind of
-      mkSep:
-        AppendMenuW(Dest, MF_SEPARATOR, 0, nil);
-      mkSubmenu:
-      begin
+      mkSep: AppendMenuW(Dest, MF_SEPARATOR, 0, nil);
+      mkSubmenu: begin
         sub := CreatePopupMenu;
         FillMenu(sub, node);
-        AppendMenuW(Dest, MF_POPUP, HMENU(sub),
-          PWideChar(UTF8Decode(L(node^.Text))));
+        AppendMenuW(Dest, MF_POPUP, HMENU(sub), PWideChar(UTF8Decode(L(node^.Text))));
       end;
     else
-      AppendMenuW(Dest, MF_STRING, Ord(node^.Action),
-        PWideChar(UTF8Decode(L(node^.Text))));
+      AppendMenuW(Dest, MF_STRING, Ord(node^.Action), PWideChar(UTF8Decode(L(node^.Text))));
       // Remember the owning menu so Check/ModifyMenuItem can reach items
       // inside submenus.
       SetLength(Bindings, Length(Bindings) + 1);
@@ -268,12 +266,24 @@ begin
       case lParam of
         WM_LBUTTONUP, WM_RBUTTONUP, WM_CONTEXTMENU: ShowTrayMenu;
       end;
-    WM_COMMAND:
-      MenuActionInvoke(TMenuAction(wParam and $FFFF));
+    WM_COMMAND: MenuActionInvoke(TMenuAction(wParam and $FFFF));
     WM_DESTROY: PostQuitMessage(0);
   else
     Result := DefWindowProc(hwnd, msg, wParam, lParam);
   end;
+end;
+
+function HookAutostartState: Boolean; cdecl;
+begin
+  Result := IsAutoStartEnabled;
+end;
+
+procedure HookAutostartRequest(AEnable: Boolean); cdecl;
+begin
+  if AEnable then
+    EnsureAutoStart
+  else
+    DisableAutoStart;
 end;
 
 // ---- Entry point ------------------------------------------------------------
@@ -290,9 +300,13 @@ begin
     TrayConfigDir := Buf
   else
     TrayConfigDir := '.';
+  // Language packs ship beside the executable.
+  TrayLangPackDir := ExtractFilePath(ExpandFileName(ParamStr(0)));
 
   TrayHooks.HasLid := False;
   TrayHooks.RefreshVisual := @HookRefreshVisual;
+  TrayHooks.AutostartState := @HookAutostartState;
+  TrayHooks.AutostartRequest := @HookAutostartRequest;
   TrayHooks.ApplyAwake := @HookApplyAwake;
   TrayHooks.ApplyLidMode := nil;
   TrayHooks.ApplyLanguage := @HookApplyLanguage;
