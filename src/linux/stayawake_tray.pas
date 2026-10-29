@@ -12,6 +12,7 @@ implementation
 uses
   SysUtils,
   Classes,
+  BaseUnix,
   stayawake_common,
   stayawake_autostart,
   ctypes,
@@ -95,13 +96,139 @@ begin
   // AppActive; nothing to assert or release here.
 end;
 
+procedure WriteTextFile(const path, content: string);
+var
+  sl: TStringList;
+begin
+  ForceDirectories(ExtractFilePath(path));
+  sl := TStringList.Create;
+  try
+    sl.Text := content;
+    sl.SaveToFile(path);
+  finally
+    sl.Free;
+  end;
+end;
+
+procedure ChmodFile(const path: string; mode: Integer);
+begin
+  FpChmod(PAnsiChar(path), mode);
+end;
+
+// The guard component (service unit + guard script) is embedded below and
+// self-installed into the user's systemd session the first time "block"
+// mode is picked - no terminal, no root, nothing to download.
+
+const
+  GUARD_UNIT: string =
+      '[Unit]'
+          + LineEnding
+          + 'Description=StayAwake lid guard (lid close on AC does nothing)'
+          + LineEnding
+          + 'PartOf=graphical-session.target'
+          + LineEnding
+          + 'After=graphical-session.target'
+          + LineEnding
+          + ''
+          + LineEnding
+          + '[Service]'
+          + LineEnding
+          + 'Type=simple'
+          + LineEnding
+          + 'ExecStart=%h/.local/bin/ac-lid-guard.sh'
+          + LineEnding
+          + 'Restart=always'
+          + LineEnding
+          + 'RestartSec=3'
+          + LineEnding
+          + ''
+          + LineEnding
+          + '[Install]'
+          + LineEnding
+          + 'WantedBy=default.target'
+          + LineEnding;
+
+  GUARD_SH: string =
+      '#!/bin/bash'
+          + LineEnding
+          + '# StayAwake lid guard (user-level, no sudo required).'
+          + LineEnding
+          + '#'
+          + LineEnding
+          + '# While the AC adapter is PHYSICALLY present and mode is "block", hold a'
+          + LineEnding
+          + '# logind inhibitor (sleep + handle-lid-switch) so that closing the lid does'
+          + LineEnding
+          + '# nothing. Reading the adapter state from /sys (kernel) instead of UPower'
+          + LineEnding
+          + '# makes this immune to UPower AC misdetection bugs.'
+          + LineEnding
+          + '#'
+          + LineEnding
+          + '# Mode file: ${XDG_CONFIG_HOME:-$HOME/.config}/stayawake/lid-mode'
+          + LineEnding
+          + '#   block = lid close on AC does nothing (guard active)'
+          + LineEnding
+          + '#   allow = system default behavior (GNOME suspends on lid close)'
+          + LineEnding
+          + '# The guard reads the mode file every cycle, so the tray can switch modes'
+          + LineEnding
+          + '# without restarting anything.'
+          + LineEnding
+          + ''
+          + LineEnding
+          + 'MODE_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/stayawake/lid-mode"'
+          + LineEnding
+          + ''
+          + LineEnding
+          + 'while :; do'
+          + LineEnding
+          + '  MODE=$(cat "$MODE_FILE" 2>/dev/null || echo allow)'
+          + LineEnding
+          + '  if [ "$MODE" = "block" ] && grep -q "^1$" /sys/class/power_supply/A*/online 2>/dev/null; then'
+          + LineEnding
+          + '    systemd-inhibit --what=sleep:handle-lid-switch --who="StayAwake lid-guard" \'
+          + LineEnding
+          + '      --why="AC lid close = do nothing (user choice)" \'
+          + LineEnding
+          + '      bash -c ''MF="${XDG_CONFIG_HOME:-$HOME/.config}/stayawake/lid-mode"; while [ "$(cat "$MF" 2>/dev/null || echo allow)" = "block" ] && grep -q "^1$" /sys/class/power_supply/A*/online 2>/dev/null; do sleep 3; done'''
+          + LineEnding
+          + '  else'
+          + LineEnding
+          + '    sleep 3'
+          + LineEnding
+          + '  fi'
+          + LineEnding
+          + 'done'
+          + LineEnding;
+
+procedure EnsureLidGuardInstalled;
+var
+  Home, UnitPath, ScriptPath: string;
+begin
+  Home := GetEnvironmentVariable('HOME');
+  if Home = '' then
+    Exit;
+  UnitPath := Home + '/.config/systemd/user/ac-lid-guard.service';
+  ScriptPath := Home + '/.local/bin/ac-lid-guard.sh';
+  if FileExists(UnitPath) and FileExists(ScriptPath) then
+    Exit;
+  WriteTextFile(ScriptPath, GUARD_SH);
+  FpChmod(PAnsiChar(ScriptPath), &755);
+  WriteTextFile(UnitPath, GUARD_UNIT);
+  FpChmod(PAnsiChar(UnitPath), &644);
+  g_spawn_command_line_async('systemctl --user daemon-reload', nil);
+end;
+
 procedure HookApplyLidMode; cdecl;
 begin
-  // Best effort: the guard is installed by src/linux/lid-guard/install.sh.
-  // If the unit is missing this silently fails and the mode file has no
-  // effect until install.sh is run.
-  if LidMode = 'block' then
-    g_spawn_command_line_async('systemctl --user enable --now ac-lid-guard.service', nil);
+  // "allow": nothing to arm - the guard (if running) reads the mode file
+  // every cycle and stands down by itself.
+  if LidMode <> 'block' then
+    Exit;
+  // "block": self-install the component if missing, then arm it.
+  EnsureLidGuardInstalled;
+  g_spawn_command_line_async('systemctl --user enable --now ac-lid-guard.service', nil);
 end;
 
 procedure HookShowAbout; cdecl;
@@ -174,6 +301,12 @@ begin
     node := Parent^.Sub[i];
     case node^.Kind of
       mkSep: gtk_menu_shell_append(GTK_MENU_SHELL(Dest), gtk_separator_menu_item_new);
+      mkHeader: begin
+        // Gray section header: visible, not clickable.
+        item := gtk_menu_item_new_with_label(PChar(L(node^.Text)));
+        gtk_widget_set_sensitive(item, False);
+        gtk_menu_shell_append(GTK_MENU_SHELL(Dest), item);
+      end;
       mkSubmenu: begin
         sub := gtk_menu_new;
         FillMenu(sub, node);
@@ -348,7 +481,7 @@ begin
   gtk_status_icon_set_visible(StatusIcon, TRUE);
   gtk_status_icon_set_tooltip(StatusIcon, 'StayAwake');
 
-  MenuRoot := BuildTrayMenu(TrayHooks.HasLid);
+  MenuRoot := BuildTrayMenu(TrayHooks.HasLid, TrayHooks.HasSleepNow, False);
   TrayMenu := gtk_menu_new;
   FillMenu(TrayMenu, MenuRoot);
 

@@ -230,6 +230,10 @@ begin
     node := Parent^.Sub[i];
     case node^.Kind of
       mkSep: AppendMenuW(Dest, MF_SEPARATOR, 0, nil);
+      mkHeader: begin
+        // Gray section header: visible, not clickable.
+        AppendMenuW(Dest, MF_STRING or MF_GRAYED, 0, PWideChar(UTF8Decode(L(node^.Text))));
+      end;
       mkSubmenu: begin
         sub := CreatePopupMenu;
         FillMenu(sub, node);
@@ -249,7 +253,20 @@ end;
 procedure ShowTrayMenu;
 var
   pt: TPoint;
+  i: Integer;
 begin
+  // States can change outside the app (e.g. the user ran the lid command in
+  // a terminal) - re-sync right before showing.
+  for i := 0 to High(Bindings) do
+    with Bindings[i] do
+      case Node^.Kind of
+        mkCheck, mkRadio: begin
+          if MenuActionState(Node^.Action) then
+            CheckMenuItem(ParentMenu, Ord(Node^.Action), MF_BYCOMMAND or MF_CHECKED)
+          else
+            CheckMenuItem(ParentMenu, Ord(Node^.Action), MF_BYCOMMAND or MF_UNCHECKED);
+        end;
+      end;
   SetForegroundWindow(TrayHwnd);
   GetCursorPos(pt);
   TrackPopupMenu(TrayMenu, TPM_LEFTALIGN or TPM_BOTTOMALIGN or TPM_RIGHTBUTTON, pt.x, pt.y, 0, TrayHwnd, nil);
@@ -346,7 +363,7 @@ begin
       );
   ShowWindow(TrayHwnd, SW_HIDE);
 
-  MenuRoot := BuildTrayMenu(TrayHooks.HasLid);
+  MenuRoot := BuildTrayMenu(TrayHooks.HasLid, TrayHooks.HasSleepNow, False);
   TrayMenu := CreatePopupMenu;
   FillMenu(TrayMenu, MenuRoot);
 

@@ -39,7 +39,7 @@ L3 的价值：Windows 代码在本机无 Windows 的情况下也能完成**编�
 - 管控机场景：`~/Library/LaunchAgents` 为 root 所有时的降级行为（SMAppService 不依赖文件写权限）。
 
 ### 系统级效果验证（不可自动断言部分的替代）
-- macOS 合盖（引导式 sudo）：菜单勾选应与 `pmset -g custom` 的 `disablesleep` 行一致；点选后弹出引导并复制对应命令。注意：**实测 `PreventSystemSleep` 断言即便持有也拦不住合盖**（2026-10，Apple Silicon 实机：断言先于合盖 4 分钟，合盖仍进入 Clamshell Sleep）——用户态断言方案已废弃，勿回退；
+- macOS 合盖（结论，2026-10 Apple Silicon 实机穷尽）：断言持有无效；协商取消仅延迟 ~5 秒；`pmset disablesleep` 有效——最终采用它 + 白名单 sudoers 免密通道（按 `/etc/sudoers.d/stayawake` 存在性自动切换免密/引导两条路径）。验证点：切换后 `pmset -g` 的 `SleepDisabled` 标志、「立即睡眠」在守卫开启下的 `Software Sleep` 日志、唤醒后防睡断言重建；
 - Windows 抑制：导入表核对 `SetThreadExecutionState` / `CreateEventA` / `SetCursorPos` 存在（win32 + win64）。
 
 ## 已知未覆盖（需人工确认）

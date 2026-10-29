@@ -56,13 +56,20 @@
 - 守卫进程在**插电**时持有 logind inhibitor 锁拦截合盖睡眠；电源状态直接读内核 `/sys`，因此免疫 GNOME/UPower 的电源误判（实测修复过 XPS 13 + Ubuntu 22.04 上「插着电却被按电池策略合盖睡眠」的案例）；
 - 切到「不动作」时托盘调用 `systemctl --user enable --now` 自愈拉起服务；电池合盖始终系统默认。
 
-### macOS：引导式管理员命令（仅 Apple Silicon）
+### macOS：pmset disablesleep + 应用菜单「立即睡眠」
 
-- 实测结论：持有 IOKit `PreventSystemSleep` 断言时合盖仍进入 Clamshell Sleep（Apple Silicon、插电、断言先于合盖 4 分钟创建）——**用户态断言在当前 macOS 上不覆盖合盖路径**，生态内工具（Lunar / Amphetamine 等）同样只能依赖 `pmset disablesleep`；
-- 菜单的勾选状态**直接反映 pmset 真实状态**：解析 `pmset -g` 的 `SleepDisabled` 标志行（经 libc `popen` 读取）。注意 `disablesleep` 设置**不会**出现在 `pmset -g custom` 的列表中（首版解析源即错于此，实测修正）；
-- 合盖子菜单仅出现在 **Apple Silicon**（运行时 `uname -m` 探测）；Intel Mac 的合盖由 SMC 强制，命令无效，菜单直接隐藏（与 Windows 的处理一致）；
-- 点选某一项时，若真实状态与之不符，**直接弹出 macOS 标准管理员密码框**（`AuthorizationExecuteWithPrivileges` 运行 `pmset -a disablesleep …`），输一次密码即生效，无需终端；复制命令的引导对话框保留为降级路径（授权 API 不可用时）；
-- `disablesleep` 对电池同样生效（合盖一律不睡）；恢复使用 `sudo pmset -a disablesleep 0`（对话框中一并给出）。
+三类机制在同一台 Apple Silicon 实机上逐一验证：
+
+1. **电源断言**：持有 IOKit `PreventSystemSleep` 时合盖仍进入 Clamshell Sleep——无效；
+2. **睡眠协商取消**：读 IORegistry 的 `AppleClamshellState`（powerd 自己的合盖标志，判定精准）并应答 `IOCancelPowerChange`——powerd 仅将睡眠**延迟约 5 秒**后照常执行，且不再重新询问应用——无效；
+3. **`pmset disablesleep`**：**有效**，但会连 Apple 菜单「睡眠」一并禁用。
+
+**最终方案（用户确认）**：接受第 3 项的代价，睡眠入口改由应用提供；切换与「立即睡眠」通过一次性安装的白名单 sudoers 条目实现**永久免密**（`src/macos/guard/install.sh`，sudo 运行一次，卸载用 `uninstall.sh`）——
+
+- 合盖子菜单（macOS）切换 `disablesleep`：「保持唤醒(合盖不睡眠)」/「系统默认(合盖睡眠)」，勾选直接反映 pmset 真实状态（`pmset -g` 的 `SleepDisabled` 标志，经 libc `popen` 读取）；
+- 点选与真实状态不符的一侧时弹出引导对话框，给出一次性命令（`sudo pmset -a disablesleep 1` / `... 0`）并自动复制到剪贴板；
+- **菜单新增「立即睡眠」**：`pmset sleepnow`（免 root，实测在 `disablesleep 1` 下依然生效，日志 `Software Sleep pid=…` 为证）——系统菜单「睡眠」失效后，这就是休眠入口；
+- 睡眠协商（配合逻辑）保留：显式睡眠（含 `sleepnow`）发生时立即应答放行并释放防睡断言，唤醒后自动重建（实测 4ms 应答、无超时记录）。
 
 ### Windows：不提供
 

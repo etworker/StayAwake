@@ -62,6 +62,9 @@ type
       maToggleAwake,
       maLidBlock,
       maLidAllow,
+      maAcLidAwake,
+      maBatClose,
+      maBat1,
       maAutostart,
       maLangAuto,
       maLangPack1, // one slot per discovered language pack (see LANG_SLOTS)
@@ -70,11 +73,16 @@ type
       maLangPack4,
       maLangPack5,
       maLangPack6,
+      maSleepNow,
+      maBat5,
+      maBat15,
+      maBat30,
+      maBat60,
       maAbout,
       maQuit
   );
 
-  TMenuItemKind = (mkItem, mkCheck, mkRadio, mkSubmenu, mkSep);
+  TMenuItemKind = (mkItem, mkCheck, mkRadio, mkSubmenu, mkSep, mkHeader);
 
   PMenuNode = ^TMenuNode;
   TMenuNode = record
@@ -87,17 +95,20 @@ type
 
   TTrayHooks = record
     HasLid: Boolean; // False on Windows (no lid feature)
+    HasSleepNow: Boolean; // macOS only: pmset sleepnow is rootless
     RefreshVisual: procedure; cdecl; // icon + tooltip + menu state re-sync
     ApplyAwake: procedure; cdecl; // AppActive just changed: update assertions/nudge
     ApplyLidMode: procedure; cdecl; // lid-mode file just changed: apply guard (Linux)
     ApplyLanguage: procedure; cdecl; // language file just changed: relabel everything
     ShowAbout: procedure; cdecl;
     Quit: procedure; cdecl;
+    LidPerSource: Boolean; // macOS: per-source lid submenu style
     // External lid-state mechanism (macOS): when LidState is set, the menu's
     // lid radio reflects LidState() instead of the mode file, and lid clicks
     // are routed to LidRequest instead of writing the file.
     LidState: function: Boolean; cdecl; // True = "block" effective
     LidRequest: procedure(ABlock: Boolean); cdecl; // user picked a lid radio
+    SleepNow: procedure; cdecl; // user picked Sleep Now
     // Login-item state and apply, platform-native (registry Run key /
     // .desktop file / SMAppService). Behind hooks like every other platform
     // touchpoint, so this unit stays platform-independent and tools such as
@@ -125,6 +136,19 @@ var
 // Paths of the two per-user settings files (derived from TrayConfigDir).
 function LangFilePath: string;
 function LidFilePath: string;
+function LidBatteryMinutesPath: string;
+function LidBatteryMinutes: Integer;
+function LidAcAwake: Boolean; // lid-ac file: 'awake' (default: false)
+procedure SetLidAcAwake(AAwake: Boolean);
+
+// Lid submenu label KEYS (resolved via L()). Defaults suit Linux; a
+// platform may point one at another key before the tray starts when its lid
+// mechanism means something else (macOS: disablesleep keeps awake on any
+// power source, so it uses the SLidTitleMac key — "When the lid is closed").
+var
+  LidTextTitle: string = 'SLidTitle';
+  LidTextBlock: string = 'SLidBlock';
+  LidTextAllow: string = 'SLidAllow';
 
 // Language selection: the first line of the lang config file names a
 // discovered pack ('en', 'zh', ...); empty or unmatched = follow the system
@@ -141,7 +165,7 @@ function LidMode: string;
 procedure SetLidMode(AMode: string);
 
 // The one menu definition. Callers own the returned tree (FreeTrayMenu).
-function BuildTrayMenu(HasLid: Boolean): PMenuNode;
+function BuildTrayMenu(HasLid, HasSleepNow, LidPerSource: Boolean): PMenuNode;
 procedure FreeTrayMenu(var Root: PMenuNode);
 
 // Checked/radio state of an action, as the renderer should display it.
@@ -277,39 +301,62 @@ end;
 
 const
   RG_LID = 1;
-  RG_LANG = 2;
+  RG_BAT = 2;
+  RG_LANG = 3;
 
   // Canonical string keys and the built-in English lines they resolve to.
   // Language packs override per key; a key missing from the active pack
   // falls back to the built-in English line, so a partial translation can
   // never blank out the UI.
-  StrKeys: array[0..11] of string = (
+  StrKeys: array[0..22] of string = (
       'SAwake',
       'SLidTitle',
+      'SLidTitleMac',
       'SLidBlock',
       'SLidAllow',
+      'SAcLidAwake',
+      'SBatClose',
+      'SBat1',
+      'SLidAcHeader',
+      'SLidBatHeader',
       'SAutoStart',
       'SLangTitle',
       'SLangAuto',
+      'SSleepNow',
       'SAbout',
       'SQuit',
       'STipWork',
       'STipPause',
-      'SAboutDesc'
+      'SAboutDesc',
+      'SBat5',
+      'SBat15',
+      'SBat30',
+      'SBat60'
   );
-  StrEn: array[0..11] of string = (
+  StrEn: array[0..22] of string = (
       'Keep Awake (block idle sleep)',
+      'When the lid is closed',
       'Lid Close on AC Power',
       'Do Nothing (Guard blocks sleep)',
       'Suspend (system default)',
+      'Stay awake (no sleep on close)',
+      'Sleep on close (default)',
+      'Stay awake 1 min, then sleep',
+      '[On power]',
+      '[On battery]',
       'Run at Login',
       'Language',
       'Follow System',
+      'Sleep Now',
       'About StayAwake',
       'Quit',
       'StayAwake - preventing sleep',
       'StayAwake - paused',
-      'Prevents idle sleep by moving the mouse every %d seconds.'
+      'Prevents idle sleep by moving the mouse every %d seconds.',
+      'Stay awake 5 min, then sleep',
+      'Stay awake 15 min, then sleep',
+      'Stay awake 30 min, then sleep',
+      'Stay awake 60 min, then sleep'
   );
 
 var
@@ -330,6 +377,49 @@ begin
   if TrayConfigDir = '' then
     Exit('');
   Result := TrayConfigDir + '/stayawake/lid-mode';
+end;
+
+function LidBatteryMinutesPath: string;
+begin
+  if TrayConfigDir = '' then
+    Exit('');
+  Result := TrayConfigDir + '/stayawake/lid-battery-mins';
+end;
+
+// Battery lid timer length in minutes; 0 = sleep immediately on close.
+// Junk falls back to 0 (system default), never to an awake-forever value.
+function LidBatteryMinutes: Integer;
+var
+  v: string;
+  n, code: Integer;
+begin
+  Result := 0;
+  v := Trim(ReadConfigValue(LidBatteryMinutesPath, ''));
+  Val(v, n, code);
+  if (code = 0) and (n > 0) then
+    Result := n;
+end;
+
+function LidAcAwakePath: string;
+begin
+  if TrayConfigDir = '' then
+    Exit('');
+  Result := TrayConfigDir + '/stayawake/lid-ac';
+end;
+
+function LidAcAwake: Boolean;
+begin
+  // Default ON: closing the lid keeps the machine running unless the user
+  // explicitly opts into the system default.
+  Result := ReadConfigValue(LidAcAwakePath, 'awake') = 'awake';
+end;
+
+procedure SetLidAcAwake(AAwake: Boolean);
+begin
+  if AAwake then
+    WriteConfigValue(LidAcAwakePath, 'awake')
+  else
+    WriteConfigValue(LidAcAwakePath, 'default');
 end;
 
 function CurrentLangStored: string;
@@ -608,7 +698,7 @@ begin
   N := nil;
 end;
 
-function BuildTrayMenu(HasLid: Boolean): PMenuNode;
+function BuildTrayMenu(HasLid, HasSleepNow, LidPerSource: Boolean): PMenuNode;
 const
   LangActions: array[1..LANG_SLOTS] of TMenuAction =
       (maLangPack1, maLangPack2, maLangPack3, maLangPack4, maLangPack5, maLangPack6);
@@ -626,8 +716,26 @@ begin
 
   if HasLid then begin
     lid := NewNode(mkSubmenu, maNone, 'SLidTitle', 0);
-    AddChild(lid, NewNode(mkRadio, maLidBlock, 'SLidBlock', RG_LID));
-    AddChild(lid, NewNode(mkRadio, maLidAllow, 'SLidAllow', RG_LID));
+    if LidPerSource then begin
+      // Per-source style (macOS): flat layout with gray section headers -
+      // AC toggle, then the battery lid timer radios (0 = sleep on close,
+      // the default). No nesting beyond the lid submenu itself.
+      AddChild(lid, NewNode(mkHeader, maNone, 'SLidAcHeader', 0));
+      AddChild(lid, NewNode(mkCheck, maAcLidAwake, 'SAcLidAwake', 0));
+      AddChild(lid, NewNode(mkSep, maNone, '', 0));
+      AddChild(lid, NewNode(mkHeader, maNone, 'SLidBatHeader', 0));
+      AddChild(lid, NewNode(mkRadio, maBatClose, 'SBatClose', RG_BAT));
+      AddChild(lid, NewNode(mkRadio, maBat1, 'SBat1', RG_BAT));
+      AddChild(lid, NewNode(mkRadio, maBat5, 'SBat5', RG_BAT));
+      AddChild(lid, NewNode(mkRadio, maBat15, 'SBat15', RG_BAT));
+      AddChild(lid, NewNode(mkRadio, maBat30, 'SBat30', RG_BAT));
+      AddChild(lid, NewNode(mkRadio, maBat60, 'SBat60', RG_BAT));
+    end
+    else begin
+      // Guard style (Linux): block / allow radios.
+      AddChild(lid, NewNode(mkRadio, maLidBlock, 'SLidBlock', RG_LID));
+      AddChild(lid, NewNode(mkRadio, maLidAllow, 'SLidAllow', RG_LID));
+    end;
     AddChild(Result, lid);
   end;
 
@@ -639,6 +747,11 @@ begin
   for i := 1 to LangPackCount do
     AddChild(lang, NewNode(mkRadio, LangActions[i], 'PackName.' + LangPacks[i].Code, RG_LANG));
   AddChild(Result, lang);
+
+  if HasSleepNow then begin
+    AddChild(Result, NewNode(mkItem, maSleepNow, 'SSleepNow', 0));
+    AddChild(Result, NewNode(mkSep, maNone, '', 0));
+  end;
 
   AddChild(Result, NewNode(mkSep, maNone, '', 0));
   AddChild(Result, NewNode(mkItem, maAbout, 'SAbout', 0));
@@ -682,6 +795,7 @@ begin
         Result := not TrayHooks.LidState()
       else
         Result := LidMode <> 'block';
+    maAcLidAwake: Result := LidAcAwake;
     maLangAuto: Result := (CurrentLangStored = '') or (not PackExists(CurrentLangStored));
     maLangPack1: Result := LangSlotMatches(1);
     maLangPack2: Result := LangSlotMatches(2);
@@ -689,6 +803,12 @@ begin
     maLangPack4: Result := LangSlotMatches(4);
     maLangPack5: Result := LangSlotMatches(5);
     maLangPack6: Result := LangSlotMatches(6);
+    maBatClose: Result := LidBatteryMinutes = 0;
+    maBat1: Result := LidBatteryMinutes = 1;
+    maBat5: Result := LidBatteryMinutes = 5;
+    maBat15: Result := LidBatteryMinutes = 15;
+    maBat30: Result := LidBatteryMinutes = 30;
+    maBat60: Result := LidBatteryMinutes = 60;
   else
     Result := False;
   end;
@@ -729,6 +849,25 @@ begin
         TrayHooks.LidRequest(False)
       else
         SetLidMode('allow');
+    maAcLidAwake: begin
+      SetLidAcAwake(not LidAcAwake);
+      if Assigned(TrayHooks.ApplyLidMode) then
+        TrayHooks.ApplyLidMode;
+      if Assigned(TrayHooks.RefreshVisual) then
+        TrayHooks.RefreshVisual;
+    end;
+    maBatClose: begin
+      WriteConfigValue(LidBatteryMinutesPath, '0');
+      if Assigned(TrayHooks.ApplyLidMode) then
+        TrayHooks.ApplyLidMode;
+      if Assigned(TrayHooks.RefreshVisual) then
+        TrayHooks.RefreshVisual;
+    end;
+    maBat1: WriteConfigValue(LidBatteryMinutesPath, '1');
+    maBat5: WriteConfigValue(LidBatteryMinutesPath, '5');
+    maBat15: WriteConfigValue(LidBatteryMinutesPath, '15');
+    maBat30: WriteConfigValue(LidBatteryMinutesPath, '30');
+    maBat60: WriteConfigValue(LidBatteryMinutesPath, '60');
     maLangAuto: ApplyLanguage('');
     maLangPack1: ApplyLanguage(LangSlotCode(1));
     maLangPack2: ApplyLanguage(LangSlotCode(2));
@@ -736,6 +875,9 @@ begin
     maLangPack4: ApplyLanguage(LangSlotCode(4));
     maLangPack5: ApplyLanguage(LangSlotCode(5));
     maLangPack6: ApplyLanguage(LangSlotCode(6));
+    maSleepNow:
+      if Assigned(TrayHooks.SleepNow) then
+        TrayHooks.SleepNow;
     maAbout:
       if Assigned(TrayHooks.ShowAbout) then
         TrayHooks.ShowAbout;
@@ -809,6 +951,4 @@ initialization
   // out the UI.
   Cur := TStringList.Create;
 
-finalization
-  Cur.Free;
 end.

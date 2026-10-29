@@ -20,511 +20,731 @@ uses
   CocoaAll,
   MacOSAll;
 
-// libc stdio for capturing `pmset -g custom` output (avoids a TProcess
-// dependency; libc is always linked on darwin).
-function popen(cmd: PAnsiChar; mode: PAnsiChar): Pointer; cdecl; external 'c' name 'popen';
-function pclose(stream: Pointer): cint; cdecl; external 'c' name 'pclose';
-function fgets(buf: PAnsiChar; size: cint; stream: Pointer): PAnsiChar; cdecl; external 'c' name 'fgets';
-
 // Platform renderer for the shared tray core (stayawake_common): it binds the
 // declarative menu tree to NSStatusItem/NSMenu and implements the platform
-// hooks (assertions, quit, about). All strings, menu structure, state queries
-// and click dispatching live in common and are identical on Linux/Windows.
+// hooks (sleep cooperation, sleep-now, quit, about). All strings, menu
+// structure, state queries and click dispatching live in common and are
+// identical on Linux/Windows.
 
 type
   TStayAwakeApp = objcclass(NSObject) public
 procedure trayAction(sender: id); message 'trayAction:';
-  end;
-
-  TItemBinding = record
-    Node: PMenuNode;
-    Item: NSMenuItem;
-  end;
-
-var
-  StatusItem: NSStatusItem = nil;
-  AppDelegate: TStayAwakeApp = nil;
-  MenuRoot: PMenuNode = nil;
-  Bindings: array of TItemBinding;
-
-  function MakeTrayNSImage: NSImage; forward;
-  function MakeEyeNSImage(Px, Pt: Integer; Template: Boolean): NSImage; forward;
-
-  // ---- Platform hooks ---------------------------------------------------------
-
-  procedure HookRefreshVisual; cdecl;
-  var
-    img: NSImage;
-    i: Integer;
-  begin
-    if StatusItem = nil then
-      Exit;
-    img := MakeTrayNSImage;
-    if img <> nil then begin
-      StatusItem.setImage(img);
-      img.release;
+  procedure menuNeedsUpdate(menu: NSMenu); message 'menuNeedsUpdate:';
     end;
-    StatusItem.setToolTip(NSString.stringWithUTF8String(PChar(TrayTooltip)));
-    for i := 0 to High(Bindings) do
-      with Bindings[i] do
-        case Node^.Kind of
-          mkCheck, mkRadio: begin
-            if MenuActionState(Node^.Action) then
-              Item.setState(NSOnState)
-            else
-              Item.setState(NSOffState);
+
+    TItemBinding = record
+      Node: PMenuNode;
+      Item: NSMenuItem;
+    end;
+
+  var
+    StatusItem: NSStatusItem = nil;
+    AppDelegate: TStayAwakeApp = nil;
+    MenuRoot: PMenuNode = nil;
+    Bindings: array of TItemBinding;
+
+    function MakeTrayNSImage: NSImage; forward;
+    function MakeEyeNSImage(Px, Pt: Integer; Template: Boolean): NSImage; forward;
+    procedure PowerLog(const s: string); forward;
+    function LidGuardInstalled: Boolean; forward;
+    procedure RunSudoPmset(const args: string); forward;
+  const
+    SEnableCmd = 'sudo pmset -a disablesleep 1';
+    SDisableCmd = 'sudo pmset -a disablesleep 0';
+    function PmsetSleepDisabled: Boolean; forward;
+
+    // ---- libc helpers -----------------------------------------------------------
+
+    // libc stdio for capturing pmset output (avoids a TProcess dependency; libc
+    // is always linked on darwin). system() runs a command and waits.
+    function objc_getClass(name: PAnsiChar): id; cdecl; external 'objc' name 'objc_getClass';
+    function sel_getUid(name: PAnsiChar): SEL; cdecl; external 'objc' name 'sel_getUid';
+    function objc_msgSend_del(obj: id; sel: SEL; arg1: id): id; cdecl; external 'objc' name 'objc_msgSend';
+    function popen(cmd: PAnsiChar; mode: PAnsiChar): Pointer; cdecl; external 'c' name 'popen';
+    function pclose(stream: Pointer): cint; cdecl; external 'c' name 'pclose';
+    function fgets(buf: PAnsiChar; size: cint; stream: Pointer): PAnsiChar; cdecl; external 'c' name 'fgets';
+    function system(cmd: PAnsiChar): cint; cdecl; external 'c' name 'system';
+
+    function PopenRead(const cmd: string): string;
+    const
+      ReadBufSize = 512;
+    var
+      f: Pointer;
+      buf: array[0..ReadBufSize - 1] of AnsiChar;
+      ln: PAnsiChar;
+    begin
+      Result := '';
+      f := popen(PAnsiChar(cmd), PAnsiChar('r'));
+      if f = nil then
+        Exit;
+      try
+        repeat
+          ln := fgets(buf, ReadBufSize, f);
+          if ln <> nil then
+            Result := Result + string(ln);
+        until ln = nil;
+      finally
+        pclose(f);
+      end;
+    end;
+
+    procedure CopyToClipboard(const text: string);
+    var
+      pb: NSPasteboard;
+    begin
+      pb := NSPasteboard.generalPasteboard;
+      pb.clearContents;
+      pb.setString_forType(
+          NSString.stringWithUTF8String(PChar(text)),
+          NSString.stringWithUTF8String('public.utf8-plain-text')
+      );
+    end;
+
+    // True after the user ran guard/install.sh once: a scoped NOPASSWD sudoers
+    // entry whitelists exactly our three pmset commands, so toggling the guard
+    // and Sleep Now run without any password (until the entry is removed).
+    function LidGuardInstalled: Boolean;
+    begin
+      Result := FileExists('/etc/sudoers.d/stayawake');
+    end;
+
+    // sudo -n never prompts; callers must check LidGuardInstalled first.
+    procedure RunSudoPmset(const args: string);
+    begin
+      PowerLog('sudo pmset ' + args);
+      system(PAnsiChar(AnsiString('/usr/bin/sudo -n /usr/bin/pmset ' + args + ' 2>/dev/null')));
+    end;
+
+    // ---- Platform hooks ---------------------------------------------------------
+
+    // Re-read every checkable/radio state from the shared core. Called after
+    // any action and, via menuNeedsUpdate:, every time the menu is about to
+    // open - so states changed OUTSIDE the app (e.g. the user ran the lid
+    // guard command in a terminal) show up immediately.
+    procedure SyncMenuStates;
+    var
+      i: Integer;
+    begin
+      for i := 0 to High(Bindings) do
+        with Bindings[i] do
+          case Node^.Kind of
+            mkCheck, mkRadio: begin
+              if MenuActionState(Node^.Action) then
+                Item.setState(NSOnState)
+              else
+                Item.setState(NSOffState);
+            end;
           end;
-        end;
-  end;
-
-  procedure HookApplyAwake; cdecl;
-  begin
-    UpdateExecutionState;
-  end;
-
-// ---- Lid close on AC (macOS): guided one-time admin command -----------------
-// Userspace assertions cannot veto clamshell sleep on current macOS (tested:
-// PreventSystemSleep held, lid close still slept). The only reliable software
-// lever is `sudo pmset disablesleep`, which this app cannot run itself. So
-// the menu reflects the real pmset state and picking a side shows a dialog
-// with the exact one-time command (copied to the clipboard).
-
-const
-  SEnableCmd = 'sudo pmset -a disablesleep 1';
-  SDisableCmd = 'sudo pmset -a disablesleep 0';
-
-  function PopenRead(const cmd: string): string;
-  const
-    ReadBufSize = 512;
-  var
-    f: Pointer;
-    buf: array[0..ReadBufSize - 1] of AnsiChar;
-    ln: PAnsiChar;
-  begin
-    Result := '';
-    f := popen(PAnsiChar(cmd), PAnsiChar('r'));
-    if f = nil then
-      Exit;
-    try
-      repeat
-        ln := fgets(buf, ReadBufSize, f);
-        if ln <> nil then
-          Result := Result + string(ln);
-      until ln = nil;
-    finally
-      pclose(f);
     end;
-  end;
 
-  function HookLidState: Boolean; cdecl;
-  var
-    outp, line, value: string;
-    i, start: Integer;
-  begin
-    // The flag shows up in `pmset -g` as a tab-separated "SleepDisabled 1"
-    // line. It does NOT appear in `pmset -g custom` on current macOS (verified
-    // on a machine with the setting active), which the first version parsed.
-    Result := False;
-    outp := LowerCase(PopenRead('/usr/bin/pmset -g 2>/dev/null'));
-    i := Pos('sleepdisabled', outp);
-    if i = 0 then
-      Exit;
-    start := i + Length('sleepdisabled');
-    line := Copy(outp, start, Length(outp));
-    i := Pos(#10, line);
-    if i > 0 then
-      line := Copy(line, 1, i - 1);
-    value := Trim(line);
-    Result := (value <> '') and (value[1] = '1');
-  end;
-
-  procedure CopyToClipboard(const text: string);
-  var
-    pb: NSPasteboard;
-  begin
-    pb := NSPasteboard.generalPasteboard;
-    pb.clearContents;
-    pb.setString_forType(
-        NSString.stringWithUTF8String(PChar(text)),
-        NSString.stringWithUTF8String('public.utf8-plain-text')
-    );
-  end;
-
-  procedure ShowLidGuideDialog(ABlock: Boolean);
-  var
-    alert: NSAlert;
-    info, cmd: string;
-  begin
-    if ABlock then begin
-      cmd := SEnableCmd;
+    // Guide dialog for the not-yet-installed case: one-time admin command,
+    // copied to the clipboard. Prefers the guard script bundled inside this
+    // .app; falls back to the bare pmset command.
+    procedure ShowLidInstallDialog;
+    var
+      alert: NSAlert;
+      res, info, cmd: string;
+    begin
+      res := ExtractFilePath(ParamStr(0)) + '../Resources/guard/install.sh';
+      if FileExists(res) then
+        cmd := 'sudo "' + res + '"'
+      else
+        cmd := SEnableCmd;
       info :=
-          'macOS 不允许普通应用拦截合盖睡眠,需要一次性管理员命令(终端中执行):'
+          '首次启用「合盖保持唤醒」需要一次性管理员命令(终端中执行):'
               + #10#10
               + cmd
               + #10#10
-              + '设置后插电合盖将不再睡眠;'
+              + '已复制到剪贴板,粘贴回车即可。此后本菜单全部操作免密;'
               + #10
-              + '恢复命令:sudo pmset -a disablesleep 0'
-              + #10#10
-              + '点「复制命令」后在终端粘贴执行即可(此为备选路径,正常情况会直接弹出系统密码框)。';
-    end
-    else begin
-      cmd := SDisableCmd;
-      info :=
-          '恢复 macOS 默认合盖行为,请执行一次性命令:'
-              + #10#10
-              + cmd
-              + #10#10
-              + '点「复制命令」后在终端粘贴执行即可(此为备选路径,正常情况会直接弹出系统密码框)。';
+              + '恢复系统默认:合盖行为选「系统默认」,或运行同目录 guard/uninstall.sh。';
+      alert := NSAlert.alloc.init;
+      alert.setMessageText(NSString.stringWithUTF8String(PChar(L(LidTextTitle))));
+      alert.setInformativeText(NSString.stringWithUTF8String(PChar(info)));
+      alert.addButtonWithTitle(NSString.stringWithUTF8String('复制命令 / Copy'));
+      alert.addButtonWithTitle(NSString.stringWithUTF8String('好 / OK'));
+      if alert.runModal = NSAlertFirstButtonReturn then
+        CopyToClipboard(cmd);
+      alert.release;
     end;
-    alert := NSAlert.alloc.init;
-    alert.setMessageText(NSString.stringWithUTF8String(PChar(L('SLidTitle'))));
-    alert.setInformativeText(NSString.stringWithUTF8String(PChar(info)));
-    alert.addButtonWithTitle(NSString.stringWithUTF8String('复制命令 / Copy'));
-    alert.addButtonWithTitle(NSString.stringWithUTF8String('好 / OK'));
-    if alert.runModal = NSAlertFirstButtonReturn then
-      CopyToClipboard(cmd);
-    alert.release;
-  end;
 
-  // Run `pmset -a disablesleep <0|1>` as root through the standard macOS
-  // authorization dialog (AuthorizationExecuteWithPrivileges): the user types
-  // their account password once, the command runs, no terminal involved.
-  // Returns True when pmset reported success; False on cancel/failure.
-  function RunRootDisableSleep(ABlock: Boolean): Boolean;
-  const
-    kAuthorizationFlagDefaults = 0;
-    kAuthorizationFlagDestroyRights = 8;
-    errAuthorizationCanceled = -60005;
-  type
-    TAuthorizationCreate =
-        function(rights: Pointer; environment: Pointer; flags: cuint32; var auth: Pointer): cint; cdecl;
-    TAuthorizationExecuteWithPrivileges =
-        function(auth: Pointer; path: PAnsiChar; flags: cuint32; args: PAnsiChar; pipe: Pointer): cint; cdecl;
-    TAuthorizationFree = function(auth: Pointer; flags: cuint32): cint; cdecl;
-  var
-    SecHandle: TLibHandle;
-    aCreate: TAuthorizationCreate;
-    aExec: TAuthorizationExecuteWithPrivileges;
-    aFree: TAuthorizationFree;
-    auth: Pointer = nil;
-    args: array[0..3] of PAnsiChar;
-    status: cint;
-  begin
-    Result := False;
-    SecHandle := LoadLibrary('/System/Library/Frameworks/Security.framework/Security');
-    if SecHandle = NilHandle then
-      Exit;
-    Pointer(aCreate) := GetProcAddress(SecHandle, 'AuthorizationCreate');
-    Pointer(aExec) := GetProcAddress(SecHandle, 'AuthorizationExecuteWithPrivileges');
-    Pointer(aFree) := GetProcAddress(SecHandle, 'AuthorizationFree');
-    if (aCreate = nil) or (aExec = nil) or (aFree = nil) then
-      Exit;
-
-    if ABlock then
-      args[2] := '1'
-    else
-      args[2] := '0';
-    args[0] := '-a';
-    args[1] := 'disablesleep';
-    args[3] := nil;
-
-    if aCreate(nil, nil, kAuthorizationFlagDefaults, auth) = 0 then begin
-      // Shows the standard administrator-password dialog when needed.
-      status := aExec(auth, '/usr/bin/pmset', kAuthorizationFlagDefaults, PAnsiChar(@args[0]), nil);
-      if status = 0 then
-        Result := True
-      else if status = errAuthorizationCanceled then
-        Exit // user dismissed the password dialog: do nothing
-      else
-        Result := False;
-      aFree(auth, kAuthorizationFlagDestroyRights);
-    end;
-  end;
-
-  procedure HookLidRequest(ABlock: Boolean); cdecl;
-  var
-    now: Boolean;
-  begin
-    now := HookLidState;
-    if ABlock = now then
-      Exit; // already in the requested state
-    // Caffeine-style flow: native password dialog runs the command directly.
-    // The copy-to-clipboard guide stays as fallback for systems where the
-    // authorization API is unavailable.
-    if not RunRootDisableSleep(ABlock) then
-      ShowLidGuideDialog(ABlock);
-    if Assigned(TrayHooks.RefreshVisual) then
-      TrayHooks.RefreshVisual;
-  end;
-
-  procedure HookApplyLanguage; cdecl;
-  var
-    i: Integer;
-  begin
-    for i := 0 to High(Bindings) do
-      Bindings[i].Item.setTitle(NSString.stringWithUTF8String(PChar(L(Bindings[i].Node^.Text))));
-    HookRefreshVisual;
-  end;
-
-  procedure HookShowAbout; cdecl;
-  var
-    alert: NSAlert;
-    info: string;
-    icon: NSImage;
-  begin
-    alert := NSAlert.alloc.init;
-    alert.setMessageText(NSString.stringWithUTF8String(PChar(L('SAbout'))));
-    info := AboutText + #10#10 + '合盖行为(接电源时)可在托盘菜单切换(Apple Silicon)。';
-    alert.setInformativeText(NSString.stringWithUTF8String(PChar(info)));
-    // The bundle ships no .icns, so NSAlert would fall back to the generic
-    // system app icon; show the colored eye instead (same artwork as the tray).
-    icon := MakeEyeNSImage(256, 64, False);
-    if icon <> nil then begin
-      alert.setIcon(icon);
-      icon.release;
-    end;
-    alert.addButtonWithTitle(NSString.stringWithUTF8String('OK'));
-    alert.runModal;
-    alert.release;
-  end;
-
-  procedure HookQuit; cdecl;
-  begin
-    NSApplication(NSApp).terminate(nil);
-  end;
-
-  function HookSystemLang: string; cdecl;
-  var
-    langs: NSArray;
-    s: NSString;
-  begin
-    // FPC 3.2.2 cocoa bindings lack NSLocale.languageCode; the AppleLanguages
-    // user default carries the same information ("zh-Hans-CN" style entries).
-    Result := '';
-    langs := NSUserDefaults.standardUserDefaults.objectForKey(NSString.stringWithUTF8String('AppleLanguages'));
-    if (langs <> nil) and (langs.count > 0) then begin
-      s := NSString(langs.objectAtIndex(0));
-      if s <> nil then begin
-        Result := LowerCase(s.UTF8String);
-        if Pos('-', Result) > 0 then
-          Result := Copy(Result, 1, Pos('-', Result) - 1);
+    procedure HookRefreshVisual; cdecl;
+    var
+      img: NSImage;
+    begin
+      if StatusItem = nil then
+        Exit;
+      img := MakeTrayNSImage;
+      if img <> nil then begin
+        StatusItem.setImage(img);
+        img.release;
       end;
+      StatusItem.setToolTip(NSString.stringWithUTF8String(PChar(TrayTooltip)));
+      SyncMenuStates;
     end;
-  end;
 
-  // ---- Menu construction ------------------------------------------------------
+    procedure HookApplyAwake; cdecl;
+    begin
+      UpdateExecutionState;
+    end;
 
-  procedure TStayAwakeApp.trayAction(sender: id);
-  begin
-    MenuActionInvoke(TMenuAction(NSMenuItem(sender).tag));
-  end;
+    // Run a shell command as root through the standard macOS authorization
+    // dialog. True = the command executed.
+    function RunRootCommand(const path: string; const args: array of string): Boolean;
+    const
+      kAuthorizationFlagDefaults = 0;
+      kAuthorizationFlagDestroyRights = 8;
+      errAuthorizationCanceled = -60005;
+    type
+      TAuthorizationCreate =
+          function(rights: Pointer; environment: Pointer; flags: cuint32; var auth: Pointer): cint; cdecl;
+      TAuthorizationExecuteWithPrivileges =
+          function(auth: Pointer; path: PAnsiChar; flags: cuint32; args: PAnsiChar; pipe: Pointer): cint; cdecl;
+      TAuthorizationFree = function(auth: Pointer; flags: cuint32): cint; cdecl;
+    var
+      SecHandle: TLibHandle;
+      gAuth: Pointer = nil; // cached authorization ref: one password per run
+      aCreate: TAuthorizationCreate;
+      aExec: TAuthorizationExecuteWithPrivileges;
+      aFree: TAuthorizationFree;
+      argv: array of PAnsiChar;
+      i: Integer;
+      status: cint;
+    begin
+      Result := False;
+      SecHandle := LoadLibrary('/System/Library/Frameworks/Security.framework/Security');
+      if SecHandle = NilHandle then
+        Exit;
+      Pointer(aCreate) := GetProcAddress(SecHandle, 'AuthorizationCreate');
+      Pointer(aExec) := GetProcAddress(SecHandle, 'AuthorizationExecuteWithPrivileges');
+      Pointer(aFree) := GetProcAddress(SecHandle, 'AuthorizationFree');
+      if (aCreate = nil) or (aExec = nil) or (aFree = nil) then
+        Exit;
 
-  function NewMenuItemFor(Node: PMenuNode): NSMenuItem;
-  begin
-    Result :=
-        NSMenuItem.alloc.initWithTitle_action_keyEquivalent(
-            NSString.stringWithUTF8String(PChar(L(Node^.Text))),
-            objcselector('trayAction:'),
-            NSString.stringWithUTF8String('')
+      SetLength(argv, Length(args) + 1);
+      for i := 0 to High(args) do
+        argv[i] := PAnsiChar(AnsiString(args[i]));
+      argv[High(argv)] := nil;
+
+      // gAuth is created once per app run and REUSED: after the first password
+      // the acquired right stays valid for this authorization ref, so later
+      // elevated operations (Sleep Now, lid mode switches) do not re-prompt.
+      // A denied status means the right expired - refresh the ref once.
+      if gAuth = nil then
+        if aCreate(nil, nil, kAuthorizationFlagDefaults, gAuth) <> 0 then
+          Exit;
+
+      status := aExec(gAuth, PAnsiChar(AnsiString(path)), kAuthorizationFlagDefaults, PAnsiChar(@argv[0]), nil);
+      if status = errAuthorizationDenied then begin
+        aFree(gAuth, kAuthorizationFlagDestroyRights);
+        gAuth := nil;
+        if aCreate(nil, nil, kAuthorizationFlagDefaults, gAuth) <> 0 then
+          Exit;
+        status := aExec(gAuth, PAnsiChar(AnsiString(path)), kAuthorizationFlagDefaults, PAnsiChar(@argv[0]), nil);
+      end;
+      Result := status = 0;
+    end;
+
+    // Called when the lid mode changes: apply the per-source disablesleep
+    // right away instead of waiting for the next mover tick.
+    procedure HookApplyLidMode; cdecl;
+    begin
+      LidPolicyApply;
+      // The user just picked a lid option while the passwordless component was
+      // never installed: guide them through the one-time command.
+      if (LidAcAwake or (LidBatteryMinutes > 0)) and (not LidGuardInstalled) then
+        ShowLidInstallDialog;
+    end;
+
+    procedure HookSleepNow; cdecl;
+    begin
+      if not PmsetSleepDisabled then begin
+        // Guard off: plain rootless sleep.
+        system('/usr/bin/pmset sleepnow');
+        Exit;
+      end;
+      // Guard armed: disablesleep blocks every sleep request, including this
+      // one. With the sudoers entry installed, lift + sleep + re-arm runs
+      // passwordless; the subshell re-arms ~20 s after the machine wakes (the
+      // root shell is frozen while asleep, so the delay effectively resumes on
+      // wake) and is backgrounded so the menu thread is not blocked.
+      if LidGuardInstalled then begin
+        PowerLog('SleepNow (guarded): passwordless lift + sleep + re-arm');
+        system(
+            PAnsiChar(
+                AnsiString(
+                    '/bin/sh -c "/usr/bin/sudo -n /usr/bin/pmset -a disablesleep 0; '
+                        + '/usr/bin/sudo -n /usr/bin/pmset sleepnow; '
+                        + '( sleep 20; /usr/bin/sudo -n /usr/bin/pmset -a disablesleep 1 ) >/dev/null 2>&1"'
+                )
+            )
         );
-    Result.setTarget(AppDelegate);
-    Result.setTag(NSInteger(Node^.Action));
-  end;
-
-  procedure Bind(Node: PMenuNode; Item: NSMenuItem);
-  var
-    n: Integer;
-  begin
-    n := Length(Bindings);
-    SetLength(Bindings, n + 1);
-    Bindings[n].Node := Node;
-    Bindings[n].Item := Item;
-  end;
-
-  procedure FillMenu(Dest: NSMenu; Parent: PMenuNode);
-  var
-    i: Integer;
-    node: PMenuNode;
-    item, sub: NSMenuItem;
-    subMenu: NSMenu;
-  begin
-    Dest.setAutoenablesItems(False);
-    for i := 0 to High(Parent^.Sub) do begin
-      node := Parent^.Sub[i];
-      case node^.Kind of
-        mkSep: Dest.addItem(NSMenuItem.separatorItem);
-        mkSubmenu: begin
-          subMenu := NSMenu.alloc.initWithTitle(NSString.stringWithUTF8String(PChar(L(node^.Text))));
-          subMenu.setAutoenablesItems(False);
-          FillMenu(subMenu, node);
-          sub := NewMenuItemFor(node);
-          sub.setSubmenu(subMenu);
-          subMenu.release;
-          Dest.addItem(sub);
-          Bind(node, sub);
-        end;
-      else
-        item := NewMenuItemFor(node);
-        Dest.addItem(item);
-        Bind(node, item);
+      end
+      else begin
+        // Guard armed but the passwordless path was never installed: fall back
+        // to the standard administrator-password dialog.
+        PowerLog('SleepNow (guarded, not installed): authorization dialog');
+        if not RunRootCommand(
+            '/bin/sh',
+            [
+                '-c',
+                '/usr/bin/pmset -a disablesleep 0; /usr/bin/pmset sleepnow; sleep 20; /usr/bin/pmset -a disablesleep 1'
+            ]) then
+          PowerLog('SleepNow authorization canceled');
       end;
     end;
-  end;
 
-  // ---- Tray icon artwork ------------------------------------------------------
+    // ---- Lid close (macOS): guided one-time admin command -----------------------
+    // `pmset -a disablesleep 1` keeps the machine awake with the lid closed (on
+    // any power source). It needs elevation once; the menu drives it through the
+    // clipboard-guide dialog. The tray radio reflects the REAL pmset state
+    // (SleepDisabled flag in `pmset -g`).
 
-  // Render the shared eye artwork at any size. Template=True lets the system
-  // re-color for dark/light menu bars; the About dialog wants the colored eye.
-  function MakeEyeNSImage(Px, Pt: Integer; Template: Boolean): NSImage;
-  var
-    Pixels: array of Byte;
-    cs: CGColorSpaceRef;
-    data: CFDataRef;
-    provider: CGDataProviderRef;
-    cg: CGImageRef;
-    sz: NSSize;
-  begin
-    Result := nil;
-    SetLength(Pixels, Px * Px * 4);
-    GenerateIconPixels(Px, AppActive, @Pixels[0]);
-    cs := CGColorSpaceCreateDeviceRGB;
-    if cs = nil then
-      Exit;
-    // CFDataCreate copies the bytes, so the on-stack pixel buffer is safe even
-    // after this function returns and the image is drawn lazily later.
-    data := CFDataCreate(nil, @Pixels[0], Length(Pixels));
-    provider := nil;
-    cg := nil;
-    if data <> nil then
-      provider := CGDataProviderCreateWithCFData(data);
-    if provider <> nil then
-      cg :=
-          CGImageCreate(
-              Px,
-              Px,
-              8,
-              32,
-              Px * 4,
-              cs,
-              kCGImageAlphaPremultipliedLast,
-              provider,
-              nil,
-              0,
-              kCGRenderingIntentDefault
-          );
-    if (provider <> nil) and (cg <> nil) then begin
-      sz := NSMakeSize(Pt, Pt);
-      Result := NSImage(NSImage.alloc).initWithCGImage_size(cg, sz);
-      if Template then
-        Result.setTemplate(True);
+    function PmsetSleepDisabled: Boolean;
+    var
+      outp, line: string;
+      i, start: Integer;
+    begin
+      // The flag shows up in `pmset -g` as a tab-separated "SleepDisabled 1"
+      // line. It does NOT appear in `pmset -g custom` on current macOS (verified
+      // on a machine with the setting active), which the first version parsed.
+      Result := False;
+      outp := LowerCase(PopenRead('/usr/bin/pmset -g 2>/dev/null'));
+      i := Pos('sleepdisabled', outp);
+      if i = 0 then
+        Exit;
+      start := i + Length('sleepdisabled');
+      line := Copy(outp, start, Length(outp));
+      i := Pos(#10, line);
+      if i > 0 then
+        line := Copy(line, 1, i - 1);
+      line := Trim(line);
+      Result := (line <> '') and (line[1] = '1');
     end;
-    if cs <> nil then
-      CGColorSpaceRelease(cs);
-    if data <> nil then
-      CFRelease(data);
-    if provider <> nil then
-      CGDataProviderRelease(provider);
-    if cg <> nil then
-      CGImageRelease(cg);
-  end;
 
-  function MakeTrayNSImage: NSImage;
+    procedure HookApplyLanguage; cdecl;
+    var
+      i: Integer;
+    begin
+      for i := 0 to High(Bindings) do
+        Bindings[i].Item.setTitle(NSString.stringWithUTF8String(PChar(L(Bindings[i].Node^.Text))));
+      HookRefreshVisual;
+    end;
+
+    procedure HookShowAbout; cdecl;
+    var
+      alert: NSAlert;
+      info: string;
+      icon: NSImage;
+    begin
+      alert := NSAlert.alloc.init;
+      alert.setMessageText(NSString.stringWithUTF8String(PChar(L('SAbout'))));
+      info := AboutText;
+      alert.setInformativeText(NSString.stringWithUTF8String(PChar(info)));
+      // The bundle ships no .icns, so NSAlert would fall back to the generic
+      // system app icon; show the colored eye instead (same artwork as the tray).
+      icon := MakeEyeNSImage(256, 64, False);
+      if icon <> nil then begin
+        alert.setIcon(icon);
+        icon.release;
+      end;
+      alert.addButtonWithTitle(NSString.stringWithUTF8String('OK'));
+      alert.runModal;
+      alert.release;
+    end;
+
+    procedure HookQuit; cdecl;
+    begin
+      NSApplication(NSApp).terminate(nil);
+    end;
+
+    function HookSystemLang: string; cdecl;
+    var
+      langs: NSArray;
+      s: NSString;
+    begin
+      // FPC 3.2.2 cocoa bindings lack NSLocale.languageCode; the AppleLanguages
+      // user default carries the same information ("zh-Hans-CN" style entries).
+      Result := '';
+      langs := NSUserDefaults.standardUserDefaults.objectForKey(NSString.stringWithUTF8String('AppleLanguages'));
+      if (langs <> nil) and (langs.count > 0) then begin
+        s := NSString(langs.objectAtIndex(0));
+        if s <> nil then begin
+          Result := LowerCase(s.UTF8String);
+          if Pos('-', Result) > 0 then
+            Result := Copy(Result, 1, Pos('-', Result) - 1);
+        end;
+      end;
+    end;
+
+    // ---- System sleep cooperation (macOS) ---------------------------------------
+    // Userspace cannot veto clamshell sleep on current macOS - exhaustively
+    // verified: power assertions are ignored, IOCancelPowerChange only delays
+    // the sleep by ~5 s, and `pmset disablesleep` would also kill the Apple-menu
+    // Sleep item. Manual sleep must keep working, so this app always COOPERATES:
+    // powerd broadcasts kIOMessageSystemWillSleep (30 s ack window) and the app
+    // answers IOAllowPowerChange immediately, dropping the keep-awake assertion
+    // for the duration (re-armed on wake while still active).
+    //
+    // NOTE: the delivered messages are the IOService.h kIOMessage* values
+    // (0xE0000270/80/300/320/330), NOT the 0xE0000200-series kIOPMMessage*
+    // constants from IOPMLib - the wrong family makes the handler fall through
+    // and sleep stalls 30 s (powerd: "stayawake timed out").
+    //
+    // The menu's "Sleep Now" item goes through `pmset sleepnow`, which is an
+    // explicit request and still works while SleepDisabled=1 is armed by the
+    // lid guard (verified on-device).
+
+    procedure PowerLog(const s: string);
+    var
+      f: TextFile;
+    begin
+      AssignFile(f, '/tmp/stayawake_power.log');
+      if FileExists('/tmp/stayawake_power.log') then
+        Append(f)
+      else
+        Rewrite(f);
+      try
+        WriteLn(f, FormatDateTime('hh:nn:ss.zzz', Now), ' ', s);
+      finally
+        CloseFile(f);
+      end;
+    end;
+
   const
-    // 36 px @ 18 pt = 2x; menu-bar status items draw at ~18 pt, so this stays
-    // crisp on Retina instead of being scaled up from a 32 px bitmap.
-    ImgPx = 36;
-    ImgPt = 18;
-  begin
-    // Not a template image: template would let macOS repaint the eye mono-
-    // chrome (black/white per menu-bar appearance), breaking parity with the
-    // colored green/gray eye shown on the Windows and Linux trays.
-    Result := MakeEyeNSImage(ImgPx, ImgPt, False);
-  end;
+    kIOMessageCanSystemSleep = $E0000270;
+    kIOMessageSystemWillSleep = $E0000280;
+    kIOMessageSystemWillNotSleep = $E0000290;
+    kIOMessageSystemCapabilityChange = $E0000300;
+    kIOMessageSystemWillPowerOn = $E0000320;
+    kIOMessageSystemHasPoweredOn = $E0000330;
 
-  function HookAutostartState: Boolean; cdecl;
-  begin
-    Result := IsAutoStartEnabled;
-  end;
+  type
+    TIORegisterForSystemPower =
+        function(refcon: Pointer; var port: Pointer; handler: Pointer; var notifier: Pointer): Pointer; cdecl;
+    TIONotificationPortGetRunLoopSource = function(port: Pointer): CFRunLoopSourceRef; cdecl;
+    TIOAllowPowerChange = function(connect: Pointer; token: culong): cint; cdecl;
 
-  procedure HookAutostartRequest(AEnable: Boolean); cdecl;
-  begin
-    if AEnable then
-      EnsureAutoStart
-    else
-      DisableAutoStart;
-  end;
-
-  // ---- Entry point ------------------------------------------------------------
-
-  // Platform config/hooks must be ready BEFORE the main body starts:
-  // stayawake.lpr runs StartMoverThread (which applies the lid guard) prior
-  // to TrayCreate, so this is wired via the unit's initialization section
-  // (at the bottom) rather than from TrayCreate.
-  procedure InitPlatformConfig;
-  begin
-    TrayConfigDir := GetEnvironmentVariable('HOME');
-    if TrayConfigDir <> '' then
-      TrayConfigDir := TrayConfigDir + '/Library/Application Support';
-    // Language packs ship inside the bundle: <app>/Contents/Resources.
-    TrayLangPackDir := ExtractFilePath(ExpandFileName(ParamStr(0))) + '../Resources';
-
-    // `pmset disablesleep` (the only lid-close lever) is honored on Apple
-    // Silicon; Intel Macs enforce clamshell sleep at the SMC layer, where the
-    // admin command changes nothing. Hide the submenu on x86_64 instead of
-    // prompting for a password that cannot work.
-    TrayHooks.HasLid := Pos('arm64', LowerCase(PopenRead('/usr/bin/uname -m 2>/dev/null'))) > 0;
-
-    TrayHooks.RefreshVisual := @HookRefreshVisual;
-    TrayHooks.AutostartState := @HookAutostartState;
-    TrayHooks.AutostartRequest := @HookAutostartRequest;
-    TrayHooks.ApplyAwake := @HookApplyAwake;
-    TrayHooks.ApplyLidMode := nil;
-    TrayHooks.ApplyLanguage := @HookApplyLanguage;
-    TrayHooks.ShowAbout := @HookShowAbout;
-    TrayHooks.Quit := @HookQuit;
-    TrayHooks.LidState := @HookLidState;
-    TrayHooks.LidRequest := @HookLidRequest;
-    TraySystemLang := @HookSystemLang;
-  end;
-
-  procedure TrayCreate;
   var
-    app: NSApplication;
-    menu: NSMenu;
-    img: NSImage;
-  begin
-    app := NSApplication.sharedApplication;
-    app.setActivationPolicy(NSApplicationActivationPolicyAccessory);
-    app.finishLaunching;
+    PMIONotificationPort: Pointer = nil;
+    PowerConnect: Pointer = nil;
+    IOReg: TLibHandle = NilHandle;
+    IORegisterForSystemPower: TIORegisterForSystemPower = nil;
+    IONotificationPortGetRunLoopSource: TIONotificationPortGetRunLoopSource = nil;
+    IOAllowPowerChange: TIOAllowPowerChange = nil;
 
-    AppDelegate := TStayAwakeApp.alloc.init;
-
-    StatusItem := NSStatusBar.systemStatusBar.statusItemWithLength(NSSquareStatusItemLength);
-    StatusItem.retain;
-    StatusItem.setHighlightMode(True);
-
-    img := MakeTrayNSImage;
-    if img <> nil then begin
-      StatusItem.setImage(img);
-      img.release;
+    procedure InitPowerNegotiation;
+    begin
+      if IOReg <> NilHandle then
+        Exit;
+      IOReg := LoadLibrary('/System/Library/Frameworks/IOKit.framework/IOKit');
+      if IOReg = NilHandle then
+        Exit;
+      Pointer(IORegisterForSystemPower) := GetProcAddress(IOReg, 'IORegisterForSystemPower');
+      Pointer(IONotificationPortGetRunLoopSource) := GetProcAddress(IOReg, 'IONotificationPortGetRunLoopSource');
+      Pointer(IOAllowPowerChange) := GetProcAddress(IOReg, 'IOAllowPowerChange');
     end;
 
-    MenuRoot := BuildTrayMenu(TrayHooks.HasLid);
-    menu := NSMenu.alloc.initWithTitle(NSString.stringWithUTF8String('StayAwake'));
-    FillMenu(menu, MenuRoot);
+    procedure PowerEventHandler(refcon: Pointer; service: Pointer; msgType: cuint32; arg: Pointer); cdecl;
+    var
+      token: culong;
+    begin
+      token := culong(PtrUInt(arg));
+      PowerLog('FIRED msg=0x' + IntToHex(msgType, 8));
+      if (PowerConnect = nil) or (IOAllowPowerChange = nil) then begin
+        PowerLog('ABORT: connect/symbols nil');
+        Exit;
+      end;
+      case msgType of
+        kIOMessageCanSystemSleep: begin
+          // Idle sleep: policy is already expressed via the keep-awake assertion.
+          IOAllowPowerChange(PowerConnect, token);
+          PowerLog('answered CAN-SLEEP allow');
+        end;
+        kIOMessageSystemWillSleep: begin
+          // Always cooperate: userspace cannot veto clamshell sleep anyway, and
+          // manual sleep (menu / power button) must never be delayed. Drop the
+          // assertion for the duration; re-armed on wake while still active.
+          OnSystemSleep;
+          IOAllowPowerChange(PowerConnect, token);
+          PowerLog('answered WILL-SLEEP allow (cooperate)');
+        end;
+        kIOMessageSystemCapabilityChange: begin
+          OnSystemWake; // some wake cycles never deliver HasPoweredOn
+          IOAllowPowerChange(PowerConnect, token);
+          PowerLog('answered CAPABILITY allow');
+        end;
+        kIOMessageSystemWillPowerOn: OnSystemWake;
+        kIOMessageSystemHasPoweredOn: begin
+          OnSystemWake; // re-arm the assertion if still active
+          PowerLog('powered-on: re-armed');
+        end;
+      end;
+    end;
 
-    StatusItem.setMenu(menu);
-    menu.release;
+    procedure RegisterPowerNotifications;
+    var
+      notifier: Pointer = nil;
+      src: CFRunLoopSourceRef;
+    begin
+      if (IORegisterForSystemPower = nil) or (IONotificationPortGetRunLoopSource = nil) then
+        Exit;
+      PowerConnect := IORegisterForSystemPower(nil, PMIONotificationPort, @PowerEventHandler, notifier);
+      PowerLog(Format('registered connect=%s port=%s', [HexStr(PowerConnect), HexStr(PMIONotificationPort)]));
+      if PowerConnect = nil then
+        Exit;
+      src := IONotificationPortGetRunLoopSource(PMIONotificationPort);
+      PowerLog(Format('runloop source=%s', [HexStr(src)]));
+      if src <> nil then
+        CFRunLoopAddSource(CFRunLoopGetMain(), src, kCFRunLoopDefaultMode);
+    end;
 
-    HookRefreshVisual;
-    app.run;
-  end;
+    // ---- Menu construction ------------------------------------------------------
 
-  initialization
-    InitPlatformConfig;
+    procedure TStayAwakeApp.trayAction(sender: id);
+    begin
+      MenuActionInvoke(TMenuAction(NSMenuItem(sender).tag));
+    end;
 
-  finalization
-    FreeTrayMenu(MenuRoot);
+    // Called by AppKit right before the status-item menu is displayed.
+    procedure TStayAwakeApp.menuNeedsUpdate(menu: NSMenu);
+    begin
+      SyncMenuStates;
+    end;
 
-  end.
+    function NewMenuItemFor(Node: PMenuNode): NSMenuItem;
+    begin
+      Result :=
+          NSMenuItem.alloc.initWithTitle_action_keyEquivalent(
+              NSString.stringWithUTF8String(PChar(L(Node^.Text))),
+              objcselector('trayAction:'),
+              NSString.stringWithUTF8String('')
+          );
+      Result.setTarget(AppDelegate);
+      Result.setTag(NSInteger(Node^.Action));
+    end;
+
+    procedure Bind(Node: PMenuNode; Item: NSMenuItem);
+    var
+      n: Integer;
+    begin
+      n := Length(Bindings);
+      SetLength(Bindings, n + 1);
+      Bindings[n].Node := Node;
+      Bindings[n].Item := Item;
+    end;
+
+    procedure FillMenu(Dest: NSMenu; Parent: PMenuNode);
+    var
+      i: Integer;
+      node: PMenuNode;
+      item, sub: NSMenuItem;
+      subMenu: NSMenu;
+    begin
+      Dest.setAutoenablesItems(False);
+      for i := 0 to High(Parent^.Sub) do begin
+        node := Parent^.Sub[i];
+        case node^.Kind of
+          mkSep: Dest.addItem(NSMenuItem.separatorItem);
+          mkSubmenu: begin
+            subMenu := NSMenu.alloc.initWithTitle(NSString.stringWithUTF8String(PChar(L(node^.Text))));
+            subMenu.setAutoenablesItems(False);
+            FillMenu(subMenu, node);
+            sub := NewMenuItemFor(node);
+            sub.setSubmenu(subMenu);
+            subMenu.release;
+            Dest.addItem(sub);
+            Bind(node, sub);
+          end;
+          mkHeader: begin
+            // Gray section header: visible, not clickable.
+            item := NewMenuItemFor(node);
+            item.setEnabled(False);
+            Dest.addItem(item);
+          end;
+        else
+          item := NewMenuItemFor(node);
+          Dest.addItem(item);
+          Bind(node, item);
+        end;
+      end;
+    end;
+
+    // ---- Tray icon artwork ------------------------------------------------------
+
+    // Render the shared eye artwork at any size. Template=True lets the system
+    // re-color for dark/light menu bars; the About dialog wants the colored eye.
+    function MakeEyeNSImage(Px, Pt: Integer; Template: Boolean): NSImage;
+    var
+      Pixels: array of Byte;
+      cs: CGColorSpaceRef;
+      data: CFDataRef;
+      provider: CGDataProviderRef;
+      cg: CGImageRef;
+      sz: NSSize;
+    begin
+      Result := nil;
+      SetLength(Pixels, Px * Px * 4);
+      GenerateIconPixels(Px, AppActive, @Pixels[0]);
+      cs := CGColorSpaceCreateDeviceRGB;
+      if cs = nil then
+        Exit;
+      // CFDataCreate copies the bytes, so the on-stack pixel buffer is safe even
+      // after this function returns and the image is drawn lazily later.
+      data := CFDataCreate(nil, @Pixels[0], Length(Pixels));
+      provider := nil;
+      cg := nil;
+      if data <> nil then
+        provider := CGDataProviderCreateWithCFData(data);
+      if provider <> nil then
+        cg :=
+            CGImageCreate(
+                Px,
+                Px,
+                8,
+                32,
+                Px * 4,
+                cs,
+                kCGImageAlphaPremultipliedLast,
+                provider,
+                nil,
+                0,
+                kCGRenderingIntentDefault
+            );
+      if (provider <> nil) and (cg <> nil) then begin
+        sz := NSMakeSize(Pt, Pt);
+        Result := NSImage(NSImage.alloc).initWithCGImage_size(cg, sz);
+        if Template then
+          Result.setTemplate(True);
+      end;
+      if cs <> nil then
+        CGColorSpaceRelease(cs);
+      if data <> nil then
+        CFRelease(data);
+      if provider <> nil then
+        CGDataProviderRelease(provider);
+      if cg <> nil then
+        CGImageRelease(cg);
+    end;
+
+    function MakeTrayNSImage: NSImage;
+    const
+      // 36 px @ 18 pt = 2x; menu-bar status items draw at ~18 pt, so this stays
+      // crisp on Retina instead of being scaled up from a 32 px bitmap.
+      ImgPx = 36;
+      ImgPt = 18;
+    begin
+      // Not a template image: template would let macOS repaint the eye mono-
+      // chrome, breaking parity with the colored tray on Windows/Linux.
+      Result := MakeEyeNSImage(ImgPx, ImgPt, False);
+    end;
+
+    // ---- Entry point ------------------------------------------------------------
+
+    // Platform config/hooks must be ready BEFORE the main body starts (the
+    // shared core reads config paths at any time); wired via the unit's
+    // initialization section (at the bottom) rather than from TrayCreate.
+    function HookAutostartState: Boolean; cdecl;
+    begin
+      Result := IsAutoStartEnabled;
+    end;
+
+    procedure HookAutostartRequest(AEnable: Boolean); cdecl;
+    begin
+      if AEnable then
+        EnsureAutoStart
+      else
+        DisableAutoStart;
+    end;
+
+    procedure InitPlatformConfig;
+    begin
+      TrayConfigDir := GetEnvironmentVariable('HOME');
+      if TrayConfigDir <> '' then
+        TrayConfigDir := TrayConfigDir + '/Library/Application Support';
+
+      // No lid-close blocking on macOS: exhaustively verified that userspace
+      // cannot veto clamshell sleep (assertions ignored; IOCancelPowerChange
+      // only delays ~5 s; pmset disablesleep would also kill the Sleep menu).
+      // The lid submenu IS available on macOS - the policy engine (mover)
+      // applies per-power-source disablesleep via the passwordless sudoers
+      // whitelist (guard/install.sh). Apple Silicon only: Intel enforces
+      // clamshell sleep at the SMC layer where nothing helps.
+      TrayHooks.HasLid := Pos('arm64', LowerCase(PopenRead('/usr/bin/uname -m 2>/dev/null'))) > 0;
+      TrayHooks.HasSleepNow := True;
+      TrayHooks.LidPerSource := True;
+
+      // disablesleep keeps the machine awake on ANY power source, so the plain
+      // "Lid Close" title would be wrong here: use the SLidTitleMac key instead
+      // ("When the lid is closed"; zh pack ships 合盖时).
+      LidTextTitle := 'SLidTitleMac';
+
+      // One-time migration from the old block/allow lid-mode file: 'block'
+      // becomes AC-awake + 15 min battery timer.
+      if (ReadConfigValue(TrayConfigDir + '/stayawake/lid-mode', '') = 'block')
+          and (ReadConfigValue(TrayConfigDir + '/stayawake/lid-ac', '') = '') then
+      begin
+        WriteConfigValue(TrayConfigDir + '/stayawake/lid-ac', 'awake');
+        WriteConfigValue(TrayConfigDir + '/stayawake/lid-battery-mins', '15');
+      end;
+
+      TrayHooks.RefreshVisual := @HookRefreshVisual;
+      TrayHooks.AutostartState := @HookAutostartState;
+      TrayHooks.AutostartRequest := @HookAutostartRequest;
+      TrayHooks.ApplyAwake := @HookApplyAwake;
+      TrayHooks.ApplyLidMode := @HookApplyLidMode;
+      TrayHooks.ApplyLanguage := @HookApplyLanguage;
+      TrayHooks.ShowAbout := @HookShowAbout;
+      TrayHooks.Quit := @HookQuit;
+      TrayHooks.SleepNow := @HookSleepNow;
+      TrayHooks.LidState := nil;
+      TrayHooks.LidRequest := nil;
+      TraySystemLang := @HookSystemLang;
+    end;
+
+    procedure TrayCreate;
+    var
+      app: NSApplication;
+      menu: NSMenu;
+      img: NSImage;
+    begin
+      app := NSApplication.sharedApplication;
+      app.setActivationPolicy(NSApplicationActivationPolicyAccessory);
+      app.finishLaunching;
+
+      AppDelegate := TStayAwakeApp.alloc.init;
+
+      StatusItem := NSStatusBar.systemStatusBar.statusItemWithLength(NSSquareStatusItemLength);
+      StatusItem.retain;
+      StatusItem.setHighlightMode(True);
+
+      img := MakeTrayNSImage;
+      if img <> nil then begin
+        StatusItem.setImage(img);
+        img.release;
+      end;
+
+      MenuRoot := BuildTrayMenu(TrayHooks.HasLid, TrayHooks.HasSleepNow, TrayHooks.LidPerSource);
+      menu := NSMenu.alloc.initWithTitle(NSString.stringWithUTF8String('StayAwake'));
+      FillMenu(menu, MenuRoot);
+
+      StatusItem.setMenu(menu);
+      // setDelegate's static type wants NSMenuDelegateProtocol; the informal
+      // delegate only needs to respond to menuNeedsUpdate:, so assign via
+      // objc_msgSend.
+      objc_msgSend_del(menu, sel_getUid('setDelegate:'), AppDelegate);
+      menu.release;
+
+      InitPowerNegotiation;
+      RegisterPowerNotifications;
+      HookRefreshVisual;
+      app.run;
+    end;
+
+    initialization
+      InitPlatformConfig;
+
+    finalization
+      FreeTrayMenu(MenuRoot);
+
+    end.

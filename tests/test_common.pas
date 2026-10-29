@@ -185,12 +185,13 @@ end;
 
 procedure TestMenuTree;
 var
-  Root, Lid, Lang: PMenuNode;
+  Root, Lid, Lang, Bat: PMenuNode;
+  i: Integer;
 begin
   ResetConfig;
 
-  Root := BuildTrayMenu(True);
-  Check('D1 lid tree has 10 top nodes', CountChildren(Root) = 10);
+  Root := BuildTrayMenu(True, False, False);
+  Check('D1 lid tree (no sleepnow) has 10 top nodes', CountChildren(Root) = 10);
   Check('D2 first is checkable awake row', (Root^.Sub[0]^.Kind = mkCheck) and (Root^.Sub[0]^.Action = maToggleAwake));
   Lid := Root^.Sub[2];
   Check('D3 lid submenu title key', Lid^.Text = 'SLidTitle');
@@ -211,12 +212,57 @@ begin
   Check('D8 quit is last', Root^.Sub[9]^.Action = maQuit);
   FreeTrayMenu(Root);
 
-  Root := BuildTrayMenu(False);
-  Check('D9 no-lid tree has 9 top nodes', CountChildren(Root) = 9);
+  Root := BuildTrayMenu(False, False, False);
+  Check('D9 no-lid tree (no sleepnow) has 9 top nodes', CountChildren(Root) = 9);
   Check('D10 no lid submenu anywhere', (Root^.Sub[2]^.Action = maAutostart) and (Root^.Sub[2]^.Kind = mkCheck));
   FreeTrayMenu(Root);
   FreeTrayMenu(Root); // double free must be safe (nil check)
   Check('D11 double free safe', Root = nil);
+
+  // macOS-style tree: lid off, Sleep Now on (item + its separator appended)
+  Root := BuildTrayMenu(False, True, False);
+  Check('D12 sleepnow tree has 11 top nodes', CountChildren(Root) = 11);
+  Check(
+      'D13 sleepnow item placed before the About group',
+      (Root^.Sub[5]^.Kind = mkItem)
+          and (Root^.Sub[5]^.Action = maSleepNow)
+          and (Root^.Sub[6]^.Kind = mkSep)
+          and (Root^.Sub[8]^.Action = maAbout)
+  );
+  Check('D14 sleepnow label key', Root^.Sub[5]^.Text = 'SSleepNow');
+  FreeTrayMenu(Root);
+
+  // macOS per-source tree: flat sections - AC checkbox + battery radios
+  Root := BuildTrayMenu(True, True, True);
+  Check('D12b full mac tree has 12 top nodes', CountChildren(Root) = 12);
+  Lid := Root^.Sub[2];
+  Check('D12c lid submenu is flat with 10 children', CountChildren(Lid) = 10);
+  Check(
+      'D12d ac header + checkbox',
+      (Lid^.Sub[0]^.Kind = mkHeader)
+          and (Lid^.Sub[0]^.Action = maNone)
+          and (Lid^.Sub[1]^.Kind = mkCheck)
+          and (Lid^.Sub[1]^.Action = maAcLidAwake)
+  );
+  Check(
+      'D12e bat header + 6 radios (close, 1, 5, ..., 60)',
+      (Lid^.Sub[3]^.Kind = mkHeader)
+          and (Lid^.Sub[4]^.Kind = mkRadio)
+          and (Lid^.Sub[4]^.Action = maBatClose)
+          and (Lid^.Sub[5]^.Action = maBat1)
+          and (Lid^.Sub[9]^.Action = maBat60)
+          and (Lid^.Sub[4]^.RadioGroup = Lid^.Sub[9]^.RadioGroup)
+  );
+  Check(
+      'D12f battery label keys resolve',
+      (Lid^.Sub[4]^.Text = 'SBatClose')
+          and (L('SBatClose') = 'Sleep on close (default)')
+          and (Lid^.Sub[5]^.Text = 'SBat1')
+          and (L('SBat1') = 'Stay awake 1 min, then sleep')
+          and (Lid^.Sub[9]^.Text = 'SBat60')
+          and (L('SBat60') = 'Stay awake 60 min, then sleep')
+  );
+  FreeTrayMenu(Root);
 end;
 
 // ---- E. states & dispatch ---------------------------------------------------
@@ -241,6 +287,7 @@ end;
 
 procedure TestStatesAndDispatch;
 var
+  ACPath: string;
   CallsBefore: Integer;
 begin
   ResetConfig;
@@ -290,6 +337,45 @@ begin
   MenuActionInvoke(maAbout);
   MenuActionInvoke(maQuit);
   Check('E14 nil-hook about/quit safe', True);
+
+  // battery timer minutes: dispatch persists, state reads back
+  WriteConfigValue(LidBatteryMinutesPath, '30');
+  WriteLn(
+      'DEBUG E15: file=[',
+      ReadConfigValue(LidBatteryMinutesPath, 'X'),
+      '] mins=',
+      LidBatteryMinutes,
+      ' st30=',
+      MenuActionState(maBat30),
+      ' st15=',
+      MenuActionState(maBat15)
+  );
+  Check(
+      'E15 bat radio state 30',
+      MenuActionState(maBat30)
+          and not MenuActionState(maBat15)
+          and not MenuActionState(maBat60)
+          and not MenuActionState(maBat5)
+  );
+  MenuActionInvoke(maBat60);
+  Check('E16 bat 60 persisted', Trim(ReadConfigValue(LidBatteryMinutesPath, '')) = '60');
+  MenuActionInvoke(maBatClose);
+  Check(
+      'E16b bat close = 0 minutes, radio on',
+      (LidBatteryMinutes = 0) and MenuActionState(maBatClose) and not MenuActionState(maBat60)
+  );
+  WriteConfigValue(LidBatteryMinutesPath, 'junk');
+  Check('E17 junk minutes falls back to 0', LidBatteryMinutes = 0);
+
+  // AC lid checkbox (per-source style): file-based, toggle via dispatch.
+  // Missing file defaults to awake (product decision).
+  ACPath := TrayConfigDir + '/stayawake/lid-ac';
+  DeleteFile(ACPath);
+  Check('E18 ac awake defaults on (no file)', LidAcAwake and MenuActionState(maAcLidAwake));
+  MenuActionInvoke(maAcLidAwake);
+  Check('E19 toggled off', (not LidAcAwake) and not MenuActionState(maAcLidAwake));
+  MenuActionInvoke(maAcLidAwake);
+  Check('E20 toggled back on', LidAcAwake and MenuActionState(maAcLidAwake));
 end;
 
 // ---- F. icon pixels ---------------------------------------------------------
