@@ -29,7 +29,6 @@ function GetUserDefaultUILanguage: LANGID; stdcall; external 'kernel32' name 'Ge
 
 const
   WM_TRAYCALLBACK = WM_APP + 1;
-  HWND_MESSAGE = HWND($FFFFFFFD);
   NIM_ADD = $00000000;
   NIM_MODIFY = $00000001;
   NIM_DELETE = $00000002;
@@ -401,6 +400,11 @@ begin
   wc.lpszClassName := 'StayAwakeTrayWindow';
   RegisterClass(wc);
 
+  // A plain hidden top-level window - NOT a message-only (HWND_MESSAGE)
+  // one. Message-only windows never receive system broadcasts, and
+  // WM_POWERBROADCAST (the carrier of lid-switch notifications) is a
+  // broadcast; an unshown window has no taskbar button, so nothing else
+  // changes.
   TrayHwnd :=
       CreateWindowEx(
           0,
@@ -411,7 +415,7 @@ begin
           CW_USEDEFAULT,
           0,
           0,
-          HWND_MESSAGE,
+          0,
           0,
           GetModuleHandle(nil),
           nil
@@ -426,10 +430,16 @@ begin
         GetProcAddress(GetModuleHandle('user32'), 'UnregisterPowerSettingNotification');
     if Assigned(RegisterPowerSettingNotificationW) then begin
       LidNotify := RegisterPowerSettingNotificationW(TrayHwnd, GUID_LIDSWITCH_STATE_CHANGE, 0);
-      if LidNotify = 0 then
+      if LidNotify <> 0 then
+        stayawake_mover.LidLog('lid switch notification registered (battery present)')
+      else
         stayawake_mover.LidLog('RegisterPowerSettingNotification failed');
-    end;
-  end;
+    end
+    else
+      stayawake_mover.LidLog('RegisterPowerSettingNotification not found in user32');
+  end
+  else
+    stayawake_mover.LidLog('no battery - lid switch notification skipped');
 
   MenuRoot := BuildTrayMenu(TrayHooks.HasLid, TrayHooks.HasSleepNow, False);
   TrayMenu := CreatePopupMenu;
