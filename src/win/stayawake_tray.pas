@@ -48,6 +48,9 @@ const
   // (0 = closed, nonzero = open).
   WM_POWERBROADCAST_LID = $0218;
   PBT_POWERSETTINGCHANGE_LID = $8012;
+  // Observed in the wild on an X1C5 (Win10 1809): the same payload arrives
+  // flagged $8013. Kept as an accepted alias.
+  PBT_POWERSETTINGCHANGE_ALT = $8013;
   GUID_LIDSWITCH_STATE_CHANGE: TGUID = '{BA3E0F4D-B817-4094-A2D1-D56379E6A0F3}';
 
 type
@@ -309,10 +312,18 @@ begin
       end;
     WM_COMMAND: MenuActionInvoke(TMenuAction(wParam and $FFFF));
     WM_POWERBROADCAST_LID:
-      if wParam = PBT_POWERSETTINGCHANGE_LID then begin
-        with PPowerBcastSetting(lParam)^ do
-          if (DataLength >= 4) and CompareMem(@PowerSetting, @GUID_LIDSWITCH_STATE_CHANGE, SizeOf(TGUID)) then
+      // Empirically this machine delivers power-setting changes with
+      // wParam=$8013, not the documented $8012 - accept both (the payload
+      // layout is the same POWERBROADCAST_SETTING either way).
+      if (wParam = PBT_POWERSETTINGCHANGE_LID) or (wParam = PBT_POWERSETTINGCHANGE_ALT) then begin
+        with PPowerBcastSetting(lParam)^ do begin
+          if (DataLength >= 4) and CompareMem(@PowerSetting, @GUID_LIDSWITCH_STATE_CHANGE, SizeOf(TGUID)) then begin
+            stayawake_mover.LidLog('power setting: LID data=' + IntToStr(PDWORD(@Data[0])^));
             NotifyLidState(PDWORD(@Data[0])^ = 0);
+          end
+          else
+            stayawake_mover.LidLog('power setting: other GUID');
+        end;
         Result := 1; // handled without DefWindowProc
       end;
     WM_DESTROY: begin
