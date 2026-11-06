@@ -24,7 +24,8 @@ uses
   DateUtils,
   dynlibs,
   ctypes,
-  MacOSAll;
+  MacOSAll,
+  stayawake_lidpolicy;
 
 procedure PowerLog(const s: string);
 var
@@ -306,32 +307,8 @@ begin
   end;
 end;
 
-// First "NN%" in `pmset -g batt` output; -1 when absent or unparseable.
-function ParseChargePct(const outp: string): Integer;
-var
-  i, j, mul: Integer;
-begin
-  Result := -1;
-  for i := 1 to Length(outp) do
-    if outp[i] = '%' then
-    begin
-      Result := 0;
-      mul := 1;
-      j := i - 1;
-      while (j >= 1) and (outp[j] >= '0') and (outp[j] <= '9') do
-      begin
-        Inc(Result, (Ord(outp[j]) - Ord('0')) * mul);
-        mul := mul * 10;
-        Dec(j);
-      end;
-      if mul = 1 then   // no digits before '%'
-        Result := -1
-      else
-        Exit;
-    end;
-end;
-
-// One `pmset -g batt` read, parsed into the two facts the policy needs.
+// First "NN%" in `pmset -g batt` output lives in stayawake_lidpolicy
+// (ParseChargePct) so it can be unit-tested; this wrapper adds the I/O.
 // Fails open: no AC marker = battery (conservative); no percent = -1
 // (unknown; the low-battery floor then simply never fires).
 procedure ReadPowerState(out onAC: Boolean; out pct: Integer);
@@ -362,6 +339,7 @@ var
   nowMs: Int64;
   pct, pctFloor: Integer;
   armed: Boolean;
+  dec: TLidDecision;
 begin
   nowMs := GetTickCount64;
 
@@ -414,38 +392,28 @@ begin
   else
     elapsed := 0;
 
-  // Disablesleep profiles are RE-ASSERTED every tick while the mode wants
+  // The whole tick's decision in one pure, unit-tested function; the I/O
+  // below just asserts the profiles and logs which condition fired. The
+  // disablesleep profiles are RE-ASSERTED every tick while the mode wants
   // them: this heals any external interference (e.g. another tool flipping
-  // pmset) within one tick. Two short-lived sudo children per 60 s tick is
-  // negligible load, and correctness beats call-count here.
-  wantC := Ord(acAwake);
-  wantB := Ord(acAwake and (mins <> 0) and (not gBatSleepSent));
+  // pmset) within one tick.
+  dec := LidDecide(acAwake, lidClosed, onAC, mins, elapsed, pct, pctFloor,
+    gBatSleepSent);
+  wantC := dec.WantC;
+  wantB := dec.WantB;
+  gBatSleepSent := dec.BatSleepSent;
 
-  // Low-battery floor: on battery with the lid closed, sleep once charge
-  // reaches the floor even if the timer hasn't expired - whichever of the
-  // two conditions hits first wins (they share gBatSleepSent).
-  if acAwake and lidClosed and (not onAC) and (not gBatSleepSent) and
-     (pctFloor > 0) and (pct >= 0) and (pct <= pctFloor) then
+  if dec.SleepNow then
   begin
-    gBatSleepSent := True;
-    wantB := 0;
+    // Timer expired or charge floor reached on battery: disarm and put the
+    // machine to sleep; it stays asleep (the battery profile stays at
+    // disablesleep 0).
     RunPmset('-b disablesleep 0');
     RunPmset('sleepnow');
-    PowerLog(Format('battery low (%d%% <= %d%% floor): sleeping', [pct, pctFloor]));
-  end;
-
-  // Battery timer: elapsed now also counts wall time through sleep, but
-  // expiry only fires while closed and on battery.
-  if acAwake and lidClosed and (not onAC) and (mins > 0) and
-     (not gBatSleepSent) and (elapsed >= mins * 60) then
-  begin
-    // Timer expired on battery: disarm and put the machine to sleep; it
-    // stays asleep (the battery profile stays at disablesleep 0).
-    gBatSleepSent := True;
-    wantB := 0;
-    RunPmset('-b disablesleep 0');
-    RunPmset('sleepnow');
-    PowerLog(Format('battery lid timer (%d min) expired after %d s: sleeping', [mins, elapsed]));
+    case dec.Reason of
+      ldrLowBattery: PowerLog(Format('battery low (%d%% <= %d%% floor): sleeping', [pct, pctFloor]));
+      ldrTimer:      PowerLog(Format('battery lid timer (%d min) expired after %d s: sleeping', [mins, elapsed]));
+    end;
   end;
 
   // Touch the pmset settings only when the desired profile actually changed.

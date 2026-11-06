@@ -10,7 +10,7 @@ program test_common;
   compiles with nothing but the RTL. Exit code 0 = all pass. }
 
 uses
-  SysUtils, Classes, stayawake_common;
+  SysUtils, Classes, stayawake_common, stayawake_lidpolicy;
 
 var
   FailCount: Integer = 0;
@@ -307,6 +307,86 @@ begin
   Check('E20 toggled back on', LidAcAwake and MenuActionState(maAcLidAwake));
 end;
 
+// ---- G. lid policy decision core (stayawake_lidpolicy) ----------------------
+
+procedure TestLidPolicy;
+var
+  d: TLidDecision;
+
+  procedure Decide(AcAwake, LidClosed, OnAC: Boolean;
+    Mins, Elapsed, Pct, Floor: Integer; Sent: Boolean);
+  begin
+    d := LidDecide(AcAwake, LidClosed, OnAC, Mins, Elapsed, Pct, Floor, Sent);
+  end;
+
+begin
+  // AC awake mode, lid open: both profiles armed, no sleep.
+  Decide(True, False, True, 15, 0, 80, 15, False);
+  Check('G1 ac awake lid open arms both', (d.WantC = 1) and (d.WantB = 1) and
+    (not d.SleepNow) and (d.Reason = ldrNone));
+  // Battery, closed, a second before expiry: still holding awake.
+  Decide(True, True, False, 15, 899, 40, 15, False);
+  Check('G2 battery closed before expiry keeps awake', (d.WantB = 1) and
+    (not d.SleepNow) and (d.Reason = ldrNone));
+  // Timer expires exactly at Mins*60 seconds.
+  Decide(True, True, False, 15, 900, 40, 15, False);
+  Check('G3 timer fires at exactly 900 s', d.SleepNow and (d.WantB = 0) and
+    d.BatSleepSent and (d.Reason = ldrTimer));
+  // Floor fires long before the timer would.
+  Decide(True, True, False, 15, 120, 15, 15, False);
+  Check('G4 floor fires at charge floor', d.SleepNow and (d.WantB = 0) and
+    (d.Reason = ldrLowBattery));
+  // Both conditions true on the same tick: floor wins (branch order).
+  Decide(True, True, False, 15, 900, 10, 15, False);
+  Check('G5 floor wins over timer same tick', d.SleepNow and
+    (d.Reason = ldrLowBattery) and d.BatSleepSent);
+  // Never-sleep mode (-1): timer can never fire, floor still bounds it.
+  Decide(True, True, False, -1, 100000, 90, 15, False);
+  Check('G6 never mode holds awake without floor hit', (d.WantB = 1) and
+    (not d.SleepNow));
+  Decide(True, True, False, -1, 100000, 15, 15, False);
+  Check('G7 never mode floor is the safety net', d.SleepNow and
+    (d.Reason = ldrLowBattery));
+  // Sleep-on-close mode (0): floor still applies.
+  Decide(True, True, False, 0, 60, 20, 20, False);
+  Check('G8 mins=0 floor still fires', d.SleepNow and (d.WantB = 0) and
+    (d.Reason = ldrLowBattery));
+  // Unknown charge (-1): floor never fires, timer unaffected.
+  Decide(True, True, False, 15, 900, -1, 15, False);
+  Check('G9 unknown charge timer still fires', d.SleepNow and (d.Reason = ldrTimer));
+  Decide(True, True, False, 15, 60, -1, 15, False);
+  Check('G10 unknown charge no floor', (not d.SleepNow) and (d.WantB = 1));
+  // Floor disabled (0): timer governs alone even at 5%.
+  Decide(True, True, False, 15, 60, 5, 0, False);
+  Check('G11 floor off ignores low charge', (not d.SleepNow) and (d.WantB = 1));
+  // Mode off: nothing armed, nothing fires.
+  Decide(False, True, False, 15, 900, 10, 15, False);
+  Check('G12 mode off no sleep no arm', (d.WantC = 0) and (d.WantB = 0) and
+    (not d.SleepNow));
+  // Lid open: armed but the timer never fires while open.
+  Decide(True, False, False, 15, 9000, 5, 15, False);
+  Check('G13 lid open timer never fires', (d.WantB = 1) and (not d.SleepNow));
+  // On AC: the battery conditions never fire.
+  Decide(True, True, True, 15, 9000, 5, 15, False);
+  Check('G14 on AC battery sleep never fires', (d.WantC = 1) and (d.WantB = 1) and
+    (not d.SleepNow));
+  // One-shot: sent=True suppresses everything, profile stays disarmed.
+  Decide(True, True, False, 15, 900, 5, 15, True);
+  Check('G15 sent=True no re-fire', (not d.SleepNow) and (d.WantB = 0) and
+    d.BatSleepSent and (d.Reason = ldrNone));
+
+  // ParseChargePct against real pmset -g batt shapes.
+  Check('G16 battery line pct', ParseChargePct(
+    'Now drawing from ''Battery Power'''#10 +
+    ' -InternalBattery-0 (id=29818979)'#9'72%; charging; (no estimate) present: true') = 72);
+  Check('G17 ac line 100%', ParseChargePct(
+    'Now drawing from ''AC Power'''#10 +
+    ' -InternalBattery-0 (id=29818979)'#9'100%; charged; present: true') = 100);
+  Check('G18 single digit pct', ParseChargePct('7%; discharging') = 7);
+  Check('G19 no percent -> -1', ParseChargePct('nothing here') = -1);
+  Check('G20 bare percent -> -1', ParseChargePct('%; foo') = -1);
+end;
+
 // ---- F. icon pixels ---------------------------------------------------------
 
 procedure TestIconPixels;
@@ -371,6 +451,7 @@ begin
   TestMenuTree;
   TestStatesAndDispatch;
   TestIconPixels;
+  TestLidPolicy;
   WriteLn(Format('== %d checks, %d failures ==', [CheckCount, FailCount]));
   if FailCount > 0 then
     ExitCode := 1;
