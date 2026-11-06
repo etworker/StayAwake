@@ -452,7 +452,7 @@ begin
   else
     stayawake_mover.LidLog('no battery - lid switch notification skipped');
 
-  MenuRoot := BuildTrayMenu(TrayHooks.HasLid, TrayHooks.HasSleepNow, False);
+  MenuRoot := BuildTrayMenu(TrayHooks.HasLid, TrayHooks.HasSleepNow, TrayHooks.LidPerSource);
   TrayMenu := CreatePopupMenu;
   FillMenu(TrayMenu, MenuRoot);
 
