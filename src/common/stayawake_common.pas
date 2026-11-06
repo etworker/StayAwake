@@ -79,6 +79,11 @@ type
       maBat30,
       maBat60,
       maBatNever,
+      maPctOff,
+      maPct10,
+      maPct15,
+      maPct20,
+      maPct25,
       maAbout,
       maQuit
   );
@@ -140,6 +145,8 @@ function LidFilePath: string;
 function LidBatteryMinutesPath: string;
 function LidBatteryMinutes: Integer;
 function LidAcAwake: Boolean; // lid-ac file: 'awake' (default: false)
+function LidBatteryPctPath: string;
+function LidBatteryPct: Integer; // lid-closed battery floor; 15 default, 0 = off
 procedure SetLidAcAwake(AAwake: Boolean);
 
 // Lid submenu label KEYS (resolved via L()). Defaults suit Linux; a
@@ -303,13 +310,14 @@ end;
 const
   RG_LID = 1;
   RG_BAT = 2;
+  RG_PCT = 4;
   RG_LANG = 3;
 
   // Canonical string keys and the built-in English lines they resolve to.
   // Language packs override per key; a key missing from the active pack
   // falls back to the built-in English line, so a partial translation can
   // never blank out the UI.
-  StrKeys: array[0..23] of string = (
+  StrKeys: array[0..29] of string = (
       'SAwake',
       'SLidTitle',
       'SLidTitleMac',
@@ -333,9 +341,15 @@ const
       'SBat15',
       'SBat30',
       'SBat60',
-      'SBatNever'
+      'SBatNever',
+      'SLidPctHeader',
+      'SPctOff',
+      'SPct10',
+      'SPct15',
+      'SPct20',
+      'SPct25'
   );
-  StrEn: array[0..23] of string = (
+  StrEn: array[0..29] of string = (
       'Keep Awake (block idle sleep)',
       'When the lid is closed',
       'Lid Close on AC Power',
@@ -359,7 +373,13 @@ const
       'Stay awake 15 min, then sleep',
       'Stay awake 30 min, then sleep',
       'Stay awake 60 min, then sleep',
-      'Stay awake until battery dies'
+      'Stay awake until battery dies',
+      '[Low battery]',
+      'Disabled',
+      'Sleep at 10%',
+      'Sleep at 15% (default)',
+      'Sleep at 20%',
+      'Sleep at 25%'
   );
 
 var
@@ -401,6 +421,29 @@ begin
   v := Trim(ReadConfigValue(LidBatteryMinutesPath, ''));
   Val(v, n, code);
   if (code = 0) and ((n > 0) or (n = -1)) then
+    Result := n;
+end;
+
+function LidBatteryPctPath: string;
+begin
+  if TrayConfigDir = '' then
+    Exit('');
+  Result := TrayConfigDir + '/stayawake/lid-battery-pct';
+end;
+
+// Battery charge floor while the lid is closed on battery: sleep at or
+// below this percent regardless of the lid timer (first condition wins).
+// Missing/junk/out-of-range falls back to 15; 0 disables (charge cannot
+// reach 0% while the machine is still awake).
+function LidBatteryPct: Integer;
+var
+  v: string;
+  n, code: Integer;
+begin
+  Result := 15;
+  v := Trim(ReadConfigValue(LidBatteryPctPath, ''));
+  Val(v, n, code);
+  if (code = 0) and (n >= 0) and (n <= 100) then
     Result := n;
 end;
 
@@ -735,6 +778,13 @@ begin
       AddChild(lid, NewNode(mkRadio, maBat30, 'SBat30', RG_BAT));
       AddChild(lid, NewNode(mkRadio, maBat60, 'SBat60', RG_BAT));
       AddChild(lid, NewNode(mkRadio, maBatNever, 'SBatNever', RG_BAT));
+      AddChild(lid, NewNode(mkSep, maNone, '', 0));
+      AddChild(lid, NewNode(mkHeader, maNone, 'SLidPctHeader', 0));
+      AddChild(lid, NewNode(mkRadio, maPctOff, 'SPctOff', RG_PCT));
+      AddChild(lid, NewNode(mkRadio, maPct10, 'SPct10', RG_PCT));
+      AddChild(lid, NewNode(mkRadio, maPct15, 'SPct15', RG_PCT));
+      AddChild(lid, NewNode(mkRadio, maPct20, 'SPct20', RG_PCT));
+      AddChild(lid, NewNode(mkRadio, maPct25, 'SPct25', RG_PCT));
     end
     else begin
       // Guard style (Linux): block / allow radios.
@@ -815,6 +865,11 @@ begin
     maBat30: Result := LidBatteryMinutes = 30;
     maBat60: Result := LidBatteryMinutes = 60;
     maBatNever: Result := LidBatteryMinutes < 0;
+    maPctOff: Result := LidBatteryPct = 0;
+    maPct10: Result := LidBatteryPct = 10;
+    maPct15: Result := LidBatteryPct = 15;
+    maPct20: Result := LidBatteryPct = 20;
+    maPct25: Result := LidBatteryPct = 25;
   else
     Result := False;
   end;
@@ -875,6 +930,11 @@ begin
     maBat30: WriteConfigValue(LidBatteryMinutesPath, '30');
     maBat60: WriteConfigValue(LidBatteryMinutesPath, '60');
     maBatNever: WriteConfigValue(LidBatteryMinutesPath, '-1');
+    maPctOff: WriteConfigValue(LidBatteryPctPath, '0');
+    maPct10: WriteConfigValue(LidBatteryPctPath, '10');
+    maPct15: WriteConfigValue(LidBatteryPctPath, '15');
+    maPct20: WriteConfigValue(LidBatteryPctPath, '20');
+    maPct25: WriteConfigValue(LidBatteryPctPath, '25');
     maLangAuto: ApplyLanguage('');
     maLangPack1: ApplyLanguage(LangSlotCode(1));
     maLangPack2: ApplyLanguage(LangSlotCode(2));

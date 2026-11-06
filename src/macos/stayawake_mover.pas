@@ -25,7 +25,8 @@ uses
   DateUtils,
   dynlibs,
   ctypes,
-  MacOSAll;
+  MacOSAll,
+  stayawake_lidpolicy;
 
 procedure PowerLog(const s: string);
 var
@@ -95,6 +96,7 @@ var
   gWasClosed: Boolean = False;
   gBatSleepSent: Boolean = False;
   gCachedAC: Boolean = False; // power state, refreshed every N ticks
+  gCachedPct: Integer = -1; // battery charge %, -1 = unknown
   gTicksSinceACPoll: Integer = 999; // forces a poll on the first tick
   gLastTickMs: Int64 = 0;
 
@@ -294,14 +296,17 @@ begin
   end;
 end;
 
-// True when running on AC power (parses `pmset -g batt`); fails open to
-// False = treated as battery (conservative).
-function OnACPower: Boolean;
+// First "NN%" in `pmset -g batt` output lives in stayawake_lidpolicy
+// (ParseChargePct) so it can be unit-tested; this wrapper adds the I/O.
+// Fails open: no AC marker = battery (conservative); no percent = -1
+// (unknown; the low-battery floor then simply never fires).
+procedure ReadPowerState(out onAC: Boolean; out pct: Integer);
 var
   outp: string;
 begin
   outp := PopenRead('/usr/bin/pmset -g batt 2>/dev/null');
-  Result := Pos('AC Power', outp) > 0;
+  onAC := Pos('AC Power', outp) > 0;
+  pct := ParseChargePct(outp);
 end;
 
 // Mac mini / Mac Studio have no battery (and no lid): the lid policy must
@@ -317,19 +322,23 @@ end;
 // ---- Lid policy (per power source) -------------------------------------------
 // block mode: AC closed -> stay awake indefinitely; battery closed -> stay
 // awake for LidBatteryMinutes then sleep (and stay asleep), or forever when
-// LidBatteryMinutes < 0 (until the battery dies). Disablesleep is applied
-// per source via the passwordless sudoers whitelist; the sleep at timer
-// expiry is `pmset sleepnow` (global, but the machine is on battery at that
-// point).
+// LidBatteryMinutes < 0. Two battery-side sleep conditions race, first one
+// wins: the timer expiring, or charge reaching the LidBatteryPct floor.
+// Disablesleep is applied per source via the passwordless sudoers whitelist;
+// the sleep itself is `pmset sleepnow` (global, but the machine is on
+// battery at that point).
 procedure LidPolicyApply;
 const
-  AC_POLL_EVERY = 5; // ticks between power-source polls (~5 min)
+  AC_POLL_EVERY = 5; // ticks between power-state polls (~5 min)
 var
   acAwake: Boolean;
   mins, elapsed: Integer;
   lidClosed, onAC: Boolean;
   wantC, wantB: Integer;
   nowMs: Int64;
+  pct, pctFloor: Integer;
+  armed: Boolean;
+  dec: TLidDecision;
 begin
   nowMs := GetTickCount64;
 
@@ -345,18 +354,25 @@ begin
 
   acAwake := LidAcAwake;
   mins := LidBatteryMinutes;
+  pctFloor := LidBatteryPct;
 
-  // Power source: cached for AC_POLL_EVERY ticks (each poll spawns a sudo
-  // child process). A forced poll happens when the lid closes.
+  // Power state: cached for AC_POLL_EVERY ticks (each poll spawns a sudo
+  // child process). Forced polls: the lid just closed, or the battery-
+  // lid-awake state is armed - the low-battery floor needs a fresh charge
+  // reading every tick to catch the crossing promptly.
   Inc(gTicksSinceACPoll);
   lidClosed := AppleClamshellClosed;
-  if (gTicksSinceACPoll >= AC_POLL_EVERY) or (lidClosed and (not gWasClosed)) then begin
-    onAC := OnACPower;
+  armed := acAwake and lidClosed and (not gCachedAC) and (not gBatSleepSent) and (pctFloor > 0);
+  if armed or (gTicksSinceACPoll >= AC_POLL_EVERY) or (lidClosed and (not gWasClosed)) then begin
+    ReadPowerState(onAC, pct);
     gCachedAC := onAC;
+    gCachedPct := pct;
     gTicksSinceACPoll := 0;
   end
-  else
+  else begin
     onAC := gCachedAC;
+    pct := gCachedPct;
+  end;
 
   // Lid-closed window tracking (ms precision).
   if lidClosed and (not gWasClosed) then begin
@@ -372,23 +388,26 @@ begin
   else
     elapsed := 0;
 
-  // Disablesleep profiles are RE-ASSERTED every tick while the mode wants
+  // The whole tick's decision in one pure, unit-tested function; the I/O
+  // below just asserts the profiles and logs which condition fired. The
+  // disablesleep profiles are RE-ASSERTED every tick while the mode wants
   // them: this heals any external interference (e.g. another tool flipping
-  // pmset) within one tick. Two short-lived sudo children per 60 s tick is
-  // negligible load, and correctness beats call-count here.
-  wantC := Ord(acAwake);
-  wantB := Ord(acAwake and (mins <> 0) and (not gBatSleepSent));
+  // pmset) within one tick.
+  dec := LidDecide(acAwake, lidClosed, onAC, mins, elapsed, pct, pctFloor, gBatSleepSent);
+  wantC := dec.WantC;
+  wantB := dec.WantB;
+  gBatSleepSent := dec.BatSleepSent;
 
-  // Battery timer: elapsed now also counts wall time through sleep, but
-  // expiry only fires while closed and on battery.
-  if acAwake and lidClosed and (not onAC) and (mins > 0) and (not gBatSleepSent) and (elapsed >= mins * 60) then begin
-    // Timer expired on battery: disarm and put the machine to sleep; it
-    // stays asleep (the battery profile stays at disablesleep 0).
-    gBatSleepSent := True;
-    wantB := 0;
+  if dec.SleepNow then begin
+    // Timer expired or charge floor reached on battery: disarm and put the
+    // machine to sleep; it stays asleep (the battery profile stays at
+    // disablesleep 0).
     RunPmset('-b disablesleep 0');
     RunPmset('sleepnow');
-    PowerLog(Format('battery lid timer (%d min) expired after %d s: sleeping', [mins, elapsed]));
+    case dec.Reason of
+      ldrLowBattery: PowerLog(Format('battery low (%d%% <= %d%% floor): sleeping', [pct, pctFloor]));
+      ldrTimer: PowerLog(Format('battery lid timer (%d min) expired after %d s: sleeping', [mins, elapsed]));
+    end;
   end;
 
   // Touch the pmset settings only when the desired profile actually changed.
@@ -399,16 +418,16 @@ begin
     gLastAppliedB := wantB;
     PowerLog(
         Format(
-            'policy applied: ac=%d bat=%d (lidClosed=%s acPower=%s elapsed=%d)',
-            [wantC, wantB, BoolToStr(lidClosed, True), BoolToStr(onAC, True), elapsed]
+            'policy applied: ac=%d bat=%d (lidClosed=%s acPower=%s pct=%d elapsed=%d)',
+            [wantC, wantB, BoolToStr(lidClosed, True), BoolToStr(onAC, True), pct, elapsed]
         )
     );
   end
   else
     PowerLog(
         Format(
-            'tick: lidClosed=%s onAC=%s elapsed=%d (no changes)',
-            [BoolToStr(lidClosed, True), BoolToStr(onAC, True), elapsed]
+            'tick: lidClosed=%s onAC=%s pct=%d elapsed=%d (no changes)',
+            [BoolToStr(lidClosed, True), BoolToStr(onAC, True), pct, elapsed]
         )
     );
 end;
