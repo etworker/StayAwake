@@ -169,7 +169,7 @@ procedure LidPolicyTick;
 var
   S: TSystemPowerStatus;
   onAC: Boolean;
-  mins: Integer;
+  mins, pct, pctFloor: Integer;
 begin
   if not gLidClosed or gHandledClose then
     Exit;
@@ -177,6 +177,8 @@ begin
     Exit;
   onAC := S.ACLineStatus = 1;
   mins := LidBatteryMinutes;
+  pct := S.BatteryLifePercent; // 255 = unknown
+  pctFloor := LidBatteryPct;
   if onAC then begin
     if not LidAcAwake then begin
       gHandledClose := True;
@@ -185,20 +187,31 @@ begin
     end;
     // awake checkbox on: the ES flags hold the machine; nothing to enforce
   end
-  else if mins = 0 then begin
-    gHandledClose := True;
-    LidLog('battery close, 0 min -> sleep now');
-    SleepNow;
-  end
-  else if mins > 0 then begin
-    // Window still running: the fine-grained loop re-checks every 500 ms.
-    if (GetTick64 - gClosedAtMs) >= Int64(mins) * 60000 then begin
+  else begin
+    // Battery: two sleep conditions race, first one wins - the lid timer
+    // expiring, or charge reaching the low-battery floor. The floor is
+    // timer-mode independent (it also bounds the mins < 0 option); 255
+    // (unknown charge) never triggers it.
+    if (pct <> 255) and (pctFloor > 0) and (pct <= pctFloor) then begin
       gHandledClose := True;
-      LidLog(Format('battery close, %d min elapsed -> sleep', [mins]));
+      LidLog(Format('battery low (%d%% <= %d%% floor): sleeping', [pct, pctFloor]));
       SleepNow;
+    end
+    else if mins = 0 then begin
+      gHandledClose := True;
+      LidLog('battery close, 0 min -> sleep now');
+      SleepNow;
+    end
+    else if mins > 0 then begin
+      // Window still running: the fine-grained loop re-checks every 500 ms.
+      if (GetTick64 - gClosedAtMs) >= Int64(mins) * 60000 then begin
+        gHandledClose := True;
+        LidLog(Format('battery close, %d min elapsed -> sleep', [mins]));
+        SleepNow;
+      end;
     end;
+    // mins < 0 without a floor hit: stay awake until the battery dies
   end;
-  // mins < 0: stay awake until the battery dies - never act
 end;
 
 procedure NudgeMouse;
