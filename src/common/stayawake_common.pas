@@ -62,6 +62,11 @@ type
     maBat30,
     maBat60,
     maBatNever,
+    maPctOff,
+    maPct10,
+    maPct15,
+    maPct20,
+    maPct25,
     maAbout,
     maQuit
   );
@@ -129,6 +134,12 @@ const
   SBat30: TStrMap  = ('Stay awake 30 min, then sleep', '保持清醒 30 分钟后睡眠');
   SBat60: TStrMap  = ('Stay awake 60 min, then sleep', '保持清醒 60 分钟后睡眠');
   SBatNever: TStrMap = ('Stay awake until battery dies', '盒盖不睡(直到没电关机)');
+  SLidPctHeader: TStrMap = ('[Low battery]', '[低电量]');
+  SPctOff: TStrMap = ('Disabled', '关闭');
+  SPct10: TStrMap = ('Sleep at 10%', '10% 睡眠');
+  SPct15: TStrMap = ('Sleep at 15% (default)', '15% 睡眠(默认)');
+  SPct20: TStrMap = ('Sleep at 20%', '20% 睡眠');
+  SPct25: TStrMap = ('Sleep at 25%', '25% 睡眠');
   SAbout: TStrMap = ('About StayAwake', '关于 StayAwake');
   SQuit: TStrMap = ('Quit', '退出');
   STipWork: TStrMap = ('StayAwake - preventing sleep', 'StayAwake - 防睡中');
@@ -321,6 +332,7 @@ end;
 const
   RG_LID = 1;
   RG_BAT = 2;
+  RG_PCT = 4;
   RG_LANG = 3;
   SEmpty: TStrMap = ('', '');
 
@@ -519,6 +531,13 @@ begin
       AddChild(lid, NewNode(mkRadio, maBat30, SBat30, RG_BAT));
       AddChild(lid, NewNode(mkRadio, maBat60, SBat60, RG_BAT));
       AddChild(lid, NewNode(mkRadio, maBatNever, SBatNever, RG_BAT));
+      AddChild(lid, NewNode(mkSep, maNone, SEmpty, 0));
+      AddChild(lid, NewNode(mkHeader, maNone, SLidPctHeader, 0));
+      AddChild(lid, NewNode(mkRadio, maPctOff, SPctOff, RG_PCT));
+      AddChild(lid, NewNode(mkRadio, maPct10, SPct10, RG_PCT));
+      AddChild(lid, NewNode(mkRadio, maPct15, SPct15, RG_PCT));
+      AddChild(lid, NewNode(mkRadio, maPct20, SPct20, RG_PCT));
+      AddChild(lid, NewNode(mkRadio, maPct25, SPct25, RG_PCT));
     end
     else
     begin
@@ -581,6 +600,11 @@ begin
     maBat30:       Result := LidBatteryMinutes = 30;
     maBat60:       Result := LidBatteryMinutes = 60;
     maBatNever:    Result := LidBatteryMinutes < 0;
+    maPctOff:      Result := LidBatteryPct = 0;
+    maPct10:       Result := LidBatteryPct = 10;
+    maPct15:       Result := LidBatteryPct = 15;
+    maPct20:       Result := LidBatteryPct = 20;
+    maPct25:       Result := LidBatteryPct = 25;
   else
     Result := False;
   end;
@@ -638,6 +662,11 @@ begin
     maBat30: WriteConfigValue(LidBatteryMinutesPath, '30');
     maBat60: WriteConfigValue(LidBatteryMinutesPath, '60');
     maBatNever: WriteConfigValue(LidBatteryMinutesPath, '-1');
+    maPctOff: WriteConfigValue(LidBatteryPctPath, '0');
+    maPct10:  WriteConfigValue(LidBatteryPctPath, '10');
+    maPct15:  WriteConfigValue(LidBatteryPctPath, '15');
+    maPct20:  WriteConfigValue(LidBatteryPctPath, '20');
+    maPct25:  WriteConfigValue(LidBatteryPctPath, '25');
     maLangAuto:  ApplyLanguage('');
     maLangEn:    ApplyLanguage('en');
     maLangZh:    ApplyLanguage('zh');

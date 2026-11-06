@@ -169,7 +169,7 @@ begin
   Root := BuildTrayMenu(True, True, True);
   Check('D12b full mac tree has 12 top nodes', CountChildren(Root) = 12);
   Lid := Root^.Sub[2];
-  Check('D12c lid submenu is flat with 11 children', CountChildren(Lid) = 11);
+  Check('D12c lid submenu is flat with 18 children', CountChildren(Lid) = 18);
   Check('D12d ac header + checkbox',
     (Lid^.Sub[0]^.Kind = mkHeader) and (Lid^.Sub[0]^.Action = maNone) and
     (Lid^.Sub[1]^.Kind = mkCheck) and (Lid^.Sub[1]^.Action = maAcLidAwake));
@@ -184,6 +184,14 @@ begin
     (Lid^.Sub[5]^.Text[tlZh] = '保持清醒 1 分钟后睡眠') and
     (Lid^.Sub[9]^.Text[tlEn] = 'Stay awake 60 min, then sleep') and
     (Lid^.Sub[10]^.Text[tlZh] = '盒盖不睡(直到没电关机)'));
+  Check('D12g pct header + 5 radios (off, 10, 15, 20, 25)',
+    (Lid^.Sub[11]^.Kind = mkSep) and
+    (Lid^.Sub[12]^.Kind = mkHeader) and
+    (Lid^.Sub[13]^.Kind = mkRadio) and (Lid^.Sub[13]^.Action = maPctOff) and
+    (Lid^.Sub[14]^.Action = maPct10) and (Lid^.Sub[15]^.Action = maPct15) and
+    (Lid^.Sub[16]^.Action = maPct20) and (Lid^.Sub[17]^.Action = maPct25) and
+    (Lid^.Sub[13]^.RadioGroup = Lid^.Sub[17]^.RadioGroup) and
+    (Lid^.Sub[13]^.RadioGroup <> Lid^.Sub[4]^.RadioGroup));
   FreeTrayMenu(Root);
 end;
 
@@ -281,6 +289,12 @@ begin
   Check('E18c pct floor 0 = off', LidBatteryPct = 0);
   WriteConfigValue(LidBatteryPctPath, '150');
   Check('E18d pct floor out of range defaults to 15', LidBatteryPct = 15);
+  MenuActionInvoke(maPct20);
+  Check('E18e pct 20 persisted + radio on', (LidBatteryPct = 20) and
+    MenuActionState(maPct20) and not MenuActionState(maPct15));
+  MenuActionInvoke(maPctOff);
+  Check('E18f pct off persisted', (LidBatteryPct = 0) and
+    MenuActionState(maPctOff) and not MenuActionState(maPct20));
 
   // AC lid checkbox (per-source style): file-based, toggle via dispatch.
   // Missing file defaults to awake (product decision).
