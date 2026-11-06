@@ -141,6 +141,8 @@ function LangFilePath: string;
 function LidFilePath: string;
 function LidBatteryMinutesPath: string;
 function LidBatteryMinutes: Integer;
+function LidBatteryPctPath: string;
+function LidBatteryPct: Integer;   // lid-closed battery floor; 15 default, 0 = off
 function LidAcAwake: Boolean;              // lid-ac file: 'awake' (default: false)
 procedure SetLidAcAwake(AAwake: Boolean);
 
@@ -355,6 +357,29 @@ begin
   v := Trim(ReadConfigValue(LidBatteryMinutesPath, ''));
   Val(v, n, code);
   if (code = 0) and ((n > 0) or (n = -1)) then
+    Result := n;
+end;
+
+function LidBatteryPctPath: string;
+begin
+  if TrayConfigDir = '' then
+    Exit('');
+  Result := TrayConfigDir + '/stayawake/lid-battery-pct';
+end;
+
+// Battery charge floor while the lid is closed on battery: sleep at or
+// below this percent regardless of the lid timer (first condition wins).
+// Missing/junk/out-of-range falls back to 15; 0 disables (charge cannot
+// reach 0% while the machine is still awake).
+function LidBatteryPct: Integer;
+var
+  v: string;
+  n, code: Integer;
+begin
+  Result := 15;
+  v := Trim(ReadConfigValue(LidBatteryPctPath, ''));
+  Val(v, n, code);
+  if (code = 0) and (n >= 0) and (n <= 100) then
     Result := n;
 end;
 

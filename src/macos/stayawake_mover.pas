@@ -94,6 +94,7 @@ var
   gWasClosed: Boolean = False;
   gBatSleepSent: Boolean = False;
   gCachedAC: Boolean = False;        // power state, refreshed every N ticks
+  gCachedPct: Integer = -1;          // battery charge %, -1 = unknown
   gTicksSinceACPoll: Integer = 999;  // forces a poll on the first tick
   gLastTickMs: Int64 = 0;
 
@@ -305,32 +306,62 @@ begin
   end;
 end;
 
-// True when running on AC power (parses `pmset -g batt`); fails open to
-// False = treated as battery (conservative).
-function OnACPower: Boolean;
+// First "NN%" in `pmset -g batt` output; -1 when absent or unparseable.
+function ParseChargePct(const outp: string): Integer;
+var
+  i, j, mul: Integer;
+begin
+  Result := -1;
+  for i := 1 to Length(outp) do
+    if outp[i] = '%' then
+    begin
+      Result := 0;
+      mul := 1;
+      j := i - 1;
+      while (j >= 1) and (outp[j] >= '0') and (outp[j] <= '9') do
+      begin
+        Inc(Result, (Ord(outp[j]) - Ord('0')) * mul);
+        mul := mul * 10;
+        Dec(j);
+      end;
+      if mul = 1 then   // no digits before '%'
+        Result := -1
+      else
+        Exit;
+    end;
+end;
+
+// One `pmset -g batt` read, parsed into the two facts the policy needs.
+// Fails open: no AC marker = battery (conservative); no percent = -1
+// (unknown; the low-battery floor then simply never fires).
+procedure ReadPowerState(out onAC: Boolean; out pct: Integer);
 var
   outp: string;
 begin
   outp := PopenRead('/usr/bin/pmset -g batt 2>/dev/null');
-  Result := Pos('AC Power', outp) > 0;
+  onAC := Pos('AC Power', outp) > 0;
+  pct := ParseChargePct(outp);
 end;
 
 // ---- Lid policy (per power source) -------------------------------------------
 // block mode: AC closed -> stay awake indefinitely; battery closed -> stay
 // awake for LidBatteryMinutes then sleep (and stay asleep), or forever when
-// LidBatteryMinutes < 0 (until the battery dies). Disablesleep is applied
-// per source via the passwordless sudoers whitelist; the sleep at timer
-// expiry is `pmset sleepnow` (global, but the machine is on battery at that
-// point).
+// LidBatteryMinutes < 0. Two battery-side sleep conditions race, first one
+// wins: the timer expiring, or charge reaching the LidBatteryPct floor.
+// Disablesleep is applied per source via the passwordless sudoers whitelist;
+// the sleep itself is `pmset sleepnow` (global, but the machine is on
+// battery at that point).
 procedure LidPolicyApply;
 const
-  AC_POLL_EVERY = 5;   // ticks between power-source polls (~5 min)
+  AC_POLL_EVERY = 5;   // ticks between power-state polls (~5 min)
 var
   acAwake: Boolean;
   mins, elapsed: Integer;
   lidClosed, onAC: Boolean;
   wantC, wantB: Integer;
   nowMs: Int64;
+  pct, pctFloor: Integer;
+  armed: Boolean;
 begin
   nowMs := GetTickCount64;
 
@@ -344,19 +375,29 @@ begin
 
   acAwake := LidAcAwake;
   mins := LidBatteryMinutes;
+  pctFloor := LidBatteryPct;
 
-  // Power source: cached for AC_POLL_EVERY ticks (each poll spawns a sudo
-  // child process). A forced poll happens when the lid closes.
+  // Power state: cached for AC_POLL_EVERY ticks (each poll spawns a sudo
+  // child process). Forced polls: the lid just closed, or the battery-
+  // lid-awake state is armed - the low-battery floor needs a fresh charge
+  // reading every tick to catch the crossing promptly.
   Inc(gTicksSinceACPoll);
   lidClosed := AppleClamshellClosed;
-  if (gTicksSinceACPoll >= AC_POLL_EVERY) or (lidClosed and (not gWasClosed)) then
+  armed := acAwake and lidClosed and (not gCachedAC) and
+           (not gBatSleepSent) and (pctFloor > 0);
+  if armed or (gTicksSinceACPoll >= AC_POLL_EVERY) or
+     (lidClosed and (not gWasClosed)) then
   begin
-    onAC := OnACPower;
+    ReadPowerState(onAC, pct);
     gCachedAC := onAC;
+    gCachedPct := pct;
     gTicksSinceACPoll := 0;
   end
   else
+  begin
     onAC := gCachedAC;
+    pct := gCachedPct;
+  end;
 
   // Lid-closed window tracking (ms precision).
   if lidClosed and (not gWasClosed) then
@@ -380,6 +421,19 @@ begin
   wantC := Ord(acAwake);
   wantB := Ord(acAwake and (mins <> 0) and (not gBatSleepSent));
 
+  // Low-battery floor: on battery with the lid closed, sleep once charge
+  // reaches the floor even if the timer hasn't expired - whichever of the
+  // two conditions hits first wins (they share gBatSleepSent).
+  if acAwake and lidClosed and (not onAC) and (not gBatSleepSent) and
+     (pctFloor > 0) and (pct >= 0) and (pct <= pctFloor) then
+  begin
+    gBatSleepSent := True;
+    wantB := 0;
+    RunPmset('-b disablesleep 0');
+    RunPmset('sleepnow');
+    PowerLog(Format('battery low (%d%% <= %d%% floor): sleeping', [pct, pctFloor]));
+  end;
+
   // Battery timer: elapsed now also counts wall time through sleep, but
   // expiry only fires while closed and on battery.
   if acAwake and lidClosed and (not onAC) and (mins > 0) and
@@ -401,12 +455,12 @@ begin
     RunPmset(Format('-b disablesleep %d', [wantB]));
     gLastAppliedC := wantC;
     gLastAppliedB := wantB;
-    PowerLog(Format('policy applied: ac=%d bat=%d (lidClosed=%s acPower=%s elapsed=%d)',
-      [wantC, wantB, BoolToStr(lidClosed, True), BoolToStr(onAC, True), elapsed]));
+    PowerLog(Format('policy applied: ac=%d bat=%d (lidClosed=%s acPower=%s pct=%d elapsed=%d)',
+      [wantC, wantB, BoolToStr(lidClosed, True), BoolToStr(onAC, True), pct, elapsed]));
   end
   else
-    PowerLog(Format('tick: lidClosed=%s onAC=%s elapsed=%d (no changes)',
-      [BoolToStr(lidClosed, True), BoolToStr(onAC, True), elapsed]));
+    PowerLog(Format('tick: lidClosed=%s onAC=%s pct=%d elapsed=%d (no changes)',
+      [BoolToStr(lidClosed, True), BoolToStr(onAC, True), pct, elapsed]));
 end;
 
 type

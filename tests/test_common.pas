@@ -273,6 +273,14 @@ begin
     MenuActionState(maBatNever) and not MenuActionState(maBatClose));
   WriteConfigValue(LidBatteryMinutesPath, 'junk');
   Check('E17 junk minutes falls back to 0', LidBatteryMinutes = 0);
+  WriteConfigValue(LidBatteryPctPath, '20');
+  Check('E18 pct floor parse', LidBatteryPct = 20);
+  WriteConfigValue(LidBatteryPctPath, 'junk');
+  Check('E18b pct floor junk defaults to 15', LidBatteryPct = 15);
+  WriteConfigValue(LidBatteryPctPath, '0');
+  Check('E18c pct floor 0 = off', LidBatteryPct = 0);
+  WriteConfigValue(LidBatteryPctPath, '150');
+  Check('E18d pct floor out of range defaults to 15', LidBatteryPct = 15);
 
   // AC lid checkbox (per-source style): file-based, toggle via dispatch.
   // Missing file defaults to awake (product decision).
