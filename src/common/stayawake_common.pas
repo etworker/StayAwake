@@ -100,7 +100,7 @@ type
   end;
 
   TTrayHooks = record
-    HasLid: Boolean; // False on Windows (no lid feature)
+    HasLid: Boolean; // False on batteryless machines: no lid UI, no guard
     HasSleepNow: Boolean; // macOS only: pmset sleepnow is rootless
     RefreshVisual: procedure; cdecl; // icon + tooltip + menu state re-sync
     ApplyAwake: procedure; cdecl; // AppActive just changed: update assertions/nudge
@@ -144,6 +144,7 @@ function LangFilePath: string;
 function LidFilePath: string;
 function LidBatteryMinutesPath: string;
 function LidBatteryMinutes: Integer;
+function LidAcAwakePath: string;
 function LidAcAwake: Boolean; // lid-ac file: 'awake' (default: false)
 function LidBatteryPctPath: string;
 function LidBatteryPct: Integer; // lid-closed battery floor; 15 default, 0 = off
@@ -317,7 +318,7 @@ const
   // Language packs override per key; a key missing from the active pack
   // falls back to the built-in English line, so a partial translation can
   // never blank out the UI.
-  StrKeys: array[0..29] of string = (
+  StrKeys: array[0..31] of string = (
       'SAwake',
       'SLidTitle',
       'SLidTitleMac',
@@ -347,9 +348,11 @@ const
       'SPct10',
       'SPct15',
       'SPct20',
-      'SPct25'
+      'SPct25',
+      'SNotifyLidTitle',
+      'SNotifyLidBody'
   );
-  StrEn: array[0..29] of string = (
+  StrEn: array[0..31] of string = (
       'Keep Awake (block idle sleep)',
       'When the lid is closed',
       'Lid Close on AC Power',
@@ -379,7 +382,9 @@ const
       'Sleep at 10%',
       'Sleep at 15% (default)',
       'Sleep at 20%',
-      'Sleep at 25%'
+      'Sleep at 25%',
+      'StayAwake lid policy on',
+      'Closing the lid on power no longer sleeps; on battery it sleeps as usual. Adjust in the tray menu.'
   );
 
 var
@@ -626,35 +631,56 @@ procedure AddPacksFromDir(const ADir: string);
 var
   sr: TSearchRec;
   rc: Integer;
-  Code, Name: string;
+  i, j: Integer;
+  Code, Name, Tmp: string;
+  Names: array of string;
   sl: TStringList;
 begin
   if (ADir = '') or (LangPackCount >= LANG_SLOTS) then
     Exit;
+  // Collect matches first, then sort by filename: readdir order is
+  // filesystem-dependent (hash order on ext4), so menu order must not
+  // rely on it.
+  SetLength(Names, 0);
   rc := FindFirst(ADir + '/stayawake.*.lang', faAnyFile, sr);
   try
-    while (rc = 0) and (LangPackCount < LANG_SLOTS) do begin
+    while rc = 0 do begin
       if (sr.Attr and faDirectory) = 0 then begin
-        Code := Copy(sr.Name, Length('stayawake.') + 1, Length(sr.Name) - Length('stayawake.') - Length('.lang'));
-        if (Code <> '') and (not PackExists(Code)) then begin
-          Name := Code;
-          sl := TStringList.Create;
-          try
-            LoadPackLines(ADir + '/' + sr.Name, sl);
-            if Trim(sl.Values['name']) <> '' then
-              Name := Trim(sl.Values['name']);
-          finally
-            sl.Free;
-          end;
-          Inc(LangPackCount);
-          LangPacks[LangPackCount].Code := Code;
-          LangPacks[LangPackCount].Name := Name;
-        end;
+        SetLength(Names, Length(Names) + 1);
+        Names[High(Names)] := sr.Name;
       end;
       rc := FindNext(sr);
     end;
   finally
     FindClose(sr);
+  end;
+  for i := 1 to High(Names) do begin
+    Tmp := Names[i];
+    j := i - 1;
+    while (j >= 0) and (Names[j] > Tmp) do begin
+      Names[j + 1] := Names[j];
+      Dec(j);
+    end;
+    Names[j + 1] := Tmp;
+  end;
+  for i := 0 to High(Names) do begin
+    if LangPackCount >= LANG_SLOTS then
+      Break;
+    Code := Copy(Names[i], Length('stayawake.') + 1, Length(Names[i]) - Length('stayawake.') - Length('.lang'));
+    if (Code <> '') and (not PackExists(Code)) then begin
+      Name := Code;
+      sl := TStringList.Create;
+      try
+        LoadPackLines(ADir + '/' + Names[i], sl);
+        if Trim(sl.Values['name']) <> '' then
+          Name := Trim(sl.Values['name']);
+      finally
+        sl.Free;
+      end;
+      Inc(LangPackCount);
+      LangPacks[LangPackCount].Code := Code;
+      LangPacks[LangPackCount].Name := Name;
+    end;
   end;
 end;
 
@@ -804,8 +830,10 @@ begin
   AddChild(Result, lang);
 
   if HasSleepNow then begin
-    AddChild(Result, NewNode(mkItem, maSleepNow, 'SSleepNow', 0));
+    // Separator BEFORE the item: putting it after would stack against the
+    // separator before About and render as a double line.
     AddChild(Result, NewNode(mkSep, maNone, '', 0));
+    AddChild(Result, NewNode(mkItem, maSleepNow, 'SSleepNow', 0));
   end;
 
   AddChild(Result, NewNode(mkSep, maNone, '', 0));
@@ -917,24 +945,38 @@ begin
       if Assigned(TrayHooks.RefreshVisual) then
         TrayHooks.RefreshVisual;
     end;
-    maBatClose: begin
-      WriteConfigValue(LidBatteryMinutesPath, '0');
+    maBatClose, maBat1, maBat5, maBat15, maBat30, maBat60, maBatNever: begin
+      // All battery-timer radios share the same tail: persist, then let the
+      // platform apply immediately (the guard re-reads the files; the macOS
+      // mover re-runs its policy now instead of at the next tick) and
+      // re-sync the menu.
+      case A of
+        maBatClose: WriteConfigValue(LidBatteryMinutesPath, '0');
+        maBat1: WriteConfigValue(LidBatteryMinutesPath, '1');
+        maBat5: WriteConfigValue(LidBatteryMinutesPath, '5');
+        maBat15: WriteConfigValue(LidBatteryMinutesPath, '15');
+        maBat30: WriteConfigValue(LidBatteryMinutesPath, '30');
+        maBat60: WriteConfigValue(LidBatteryMinutesPath, '60');
+        maBatNever: WriteConfigValue(LidBatteryMinutesPath, '-1');
+      end;
       if Assigned(TrayHooks.ApplyLidMode) then
         TrayHooks.ApplyLidMode;
       if Assigned(TrayHooks.RefreshVisual) then
         TrayHooks.RefreshVisual;
     end;
-    maBat1: WriteConfigValue(LidBatteryMinutesPath, '1');
-    maBat5: WriteConfigValue(LidBatteryMinutesPath, '5');
-    maBat15: WriteConfigValue(LidBatteryMinutesPath, '15');
-    maBat30: WriteConfigValue(LidBatteryMinutesPath, '30');
-    maBat60: WriteConfigValue(LidBatteryMinutesPath, '60');
-    maBatNever: WriteConfigValue(LidBatteryMinutesPath, '-1');
-    maPctOff: WriteConfigValue(LidBatteryPctPath, '0');
-    maPct10: WriteConfigValue(LidBatteryPctPath, '10');
-    maPct15: WriteConfigValue(LidBatteryPctPath, '15');
-    maPct20: WriteConfigValue(LidBatteryPctPath, '20');
-    maPct25: WriteConfigValue(LidBatteryPctPath, '25');
+    maPctOff, maPct10, maPct15, maPct20, maPct25: begin
+      // The floor is read fresh by every policy tick; only the menu needs a
+      // re-sync here.
+      case A of
+        maPctOff: WriteConfigValue(LidBatteryPctPath, '0');
+        maPct10: WriteConfigValue(LidBatteryPctPath, '10');
+        maPct15: WriteConfigValue(LidBatteryPctPath, '15');
+        maPct20: WriteConfigValue(LidBatteryPctPath, '20');
+        maPct25: WriteConfigValue(LidBatteryPctPath, '25');
+      end;
+      if Assigned(TrayHooks.RefreshVisual) then
+        TrayHooks.RefreshVisual;
+    end;
     maLangAuto: ApplyLanguage('');
     maLangPack1: ApplyLanguage(LangSlotCode(1));
     maLangPack2: ApplyLanguage(LangSlotCode(2));

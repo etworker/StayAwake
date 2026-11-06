@@ -33,3 +33,5 @@ SQuit=Quit
 STipWork=StayAwake - preventing sleep
 STipPause=StayAwake - paused
 SAboutDesc=Prevents idle sleep by moving the mouse every %d seconds.
+SNotifyLidTitle=StayAwake lid policy on
+SNotifyLidBody=Closing the lid on power no longer sleeps; on battery it sleeps as usual. Adjust in the tray menu.

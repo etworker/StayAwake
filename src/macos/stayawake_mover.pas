@@ -12,8 +12,8 @@ procedure StartMoverThread;
 procedure UpdateExecutionState;
 procedure OnSystemSleep;
 procedure OnSystemWake;
-// Re-evaluates the per-power-source disablesleep policy (block mode:
-// AC closed stays awake; battery closed stays awake for the configured
+// Re-evaluates the per-power-source lid policy through the shared engine
+// (awake on power: closed lid stays awake; battery: awake for the configured
 // minutes then sleeps). Called on every mover tick and on mode changes.
 procedure LidPolicyApply;
 
@@ -91,14 +91,12 @@ var
   IOServiceMatching: TIOServiceMatching = nil;
   IORegistryEntryCreateCFProperty: TIORegistryEntryCreateCFProperty = nil;
   IOObjectRelease: TIOObjectRelease = nil;
-  // Lid policy state
-  gClosedSinceMs: Int64 = 0; // GetTickCount64 ms when the lid closed
-  gWasClosed: Boolean = False;
-  gBatSleepSent: Boolean = False;
+  // Lid policy state: close-episode bookkeeping lives in the shared engine
+  // (stayawake_lidpolicy); these are the macOS-side caches only.
+  gEngine: TLidEngineState;
   gCachedAC: Boolean = False; // power state, refreshed every N ticks
   gCachedPct: Integer = -1; // battery charge %, -1 = unknown
   gTicksSinceACPoll: Integer = 999; // forces a poll on the first tick
-  gLastTickMs: Int64 = 0;
 
 procedure InitCoreGraphics;
 begin
@@ -320,13 +318,17 @@ begin
 end;
 
 // ---- Lid policy (per power source) -------------------------------------------
-// block mode: AC closed -> stay awake indefinitely; battery closed -> stay
-// awake for LidBatteryMinutes then sleep (and stay asleep), or forever when
-// LidBatteryMinutes < 0. Two battery-side sleep conditions race, first one
-// wins: the timer expiring, or charge reaching the LidBatteryPct floor.
-// Disablesleep is applied per source via the passwordless sudoers whitelist;
-// the sleep itself is `pmset sleepnow` (global, but the machine is on
-// battery at that point).
+// The whole tick's decision comes from the shared engine (stayawake_lidpolicy,
+// LidEngineTick); this glue only probes the macOS way, executes the sleep and
+// asserts the disablesleep profiles. block/awake mode: AC closed -> stay awake
+// indefinitely; battery closed -> stay awake for LidBatteryMinutes then sleep
+// (and stay asleep), or forever when LidBatteryMinutes < 0. Two battery-side
+// sleep conditions race, first one wins: the timer expiring, or charge
+// reaching the LidBatteryPct floor. Disablesleep is applied per source via the
+// passwordless sudoers whitelist; the sleep itself is `pmset sleepnow` (global,
+// but the machine is on battery at that point). The profiles are RE-ASSERTED
+// whenever the desired values change: this heals any external interference
+// (e.g. another tool flipping pmset) within one tick.
 procedure LidPolicyApply;
 const
   AC_POLL_EVERY = 5; // ticks between power-state polls (~5 min)
@@ -334,20 +336,12 @@ var
   acAwake: Boolean;
   mins, elapsed: Integer;
   lidClosed, onAC: Boolean;
-  wantC, wantB: Integer;
   nowMs: Int64;
   pct, pctFloor: Integer;
   armed: Boolean;
   dec: TLidDecision;
 begin
   nowMs := GetTickCount64;
-
-  // Slow counter: ticks may drift under system sleep (GetTickCount64 keeps
-  // running through sleep on macOS), so compute elapsed from tick deltas.
-  if (gLastTickMs <> 0) and (nowMs > gLastTickMs) and (nowMs - gLastTickMs > 120000) then
-    Inc(gTicksSinceACPoll, 0); // slept through; the poll catch-up below
-  // is cheap enough to just do this tick
-  gLastTickMs := nowMs;
 
   if not HasBattery then
     Exit; // desktop: never arm disablesleep, never schedule a lid sleep
@@ -362,8 +356,8 @@ begin
   // reading every tick to catch the crossing promptly.
   Inc(gTicksSinceACPoll);
   lidClosed := AppleClamshellClosed;
-  armed := acAwake and lidClosed and (not gCachedAC) and (not gBatSleepSent) and (pctFloor > 0);
-  if armed or (gTicksSinceACPoll >= AC_POLL_EVERY) or (lidClosed and (not gWasClosed)) then begin
+  armed := acAwake and lidClosed and (not gCachedAC) and (not gEngine.Sent) and (pctFloor > 0);
+  if armed or (gTicksSinceACPoll >= AC_POLL_EVERY) or (lidClosed and (not gEngine.WasClosed)) then begin
     ReadPowerState(onAC, pct);
     gCachedAC := onAC;
     gCachedPct := pct;
@@ -374,29 +368,11 @@ begin
     pct := gCachedPct;
   end;
 
-  // Lid-closed window tracking (ms precision).
-  if lidClosed and (not gWasClosed) then begin
-    gClosedSinceMs := nowMs;
-    gBatSleepSent := False;
-  end;
-  if not lidClosed then
-    gClosedSinceMs := 0;
-  gWasClosed := lidClosed;
-
-  if gClosedSinceMs <> 0 then
-    elapsed := (nowMs - gClosedSinceMs) div 1000
+  dec := LidEngineTick(gEngine, True, lidClosed, onAC, acAwake, mins, pct, pctFloor, True, nowMs);
+  if gEngine.WasClosed then
+    elapsed := (nowMs - gEngine.ClosedSinceMs) div 1000
   else
     elapsed := 0;
-
-  // The whole tick's decision in one pure, unit-tested function; the I/O
-  // below just asserts the profiles and logs which condition fired. The
-  // disablesleep profiles are RE-ASSERTED every tick while the mode wants
-  // them: this heals any external interference (e.g. another tool flipping
-  // pmset) within one tick.
-  dec := LidDecide(acAwake, lidClosed, onAC, mins, elapsed, pct, pctFloor, gBatSleepSent);
-  wantC := dec.WantC;
-  wantB := dec.WantB;
-  gBatSleepSent := dec.BatSleepSent;
 
   if dec.SleepNow then begin
     // Timer expired or charge floor reached on battery: disarm and put the
@@ -407,19 +383,20 @@ begin
     case dec.Reason of
       ldrLowBattery: PowerLog(Format('battery low (%d%% <= %d%% floor): sleeping', [pct, pctFloor]));
       ldrTimer: PowerLog(Format('battery lid timer (%d min) expired after %d s: sleeping', [mins, elapsed]));
+      ldrClose: PowerLog('close should sleep: sleeping');
     end;
   end;
 
   // Touch the pmset settings only when the desired profile actually changed.
-  if (wantC <> gLastAppliedC) or (wantB <> gLastAppliedB) then begin
-    RunPmset(Format('-c disablesleep %d', [wantC]));
-    RunPmset(Format('-b disablesleep %d', [wantB]));
-    gLastAppliedC := wantC;
-    gLastAppliedB := wantB;
+  if (dec.WantC <> gLastAppliedC) or (dec.WantB <> gLastAppliedB) then begin
+    RunPmset(Format('-c disablesleep %d', [dec.WantC]));
+    RunPmset(Format('-b disablesleep %d', [dec.WantB]));
+    gLastAppliedC := dec.WantC;
+    gLastAppliedB := dec.WantB;
     PowerLog(
         Format(
             'policy applied: ac=%d bat=%d (lidClosed=%s acPower=%s pct=%d elapsed=%d)',
-            [wantC, wantB, BoolToStr(lidClosed, True), BoolToStr(onAC, True), pct, elapsed]
+            [dec.WantC, dec.WantB, BoolToStr(lidClosed, True), BoolToStr(onAC, True), pct, elapsed]
         )
     );
   end

@@ -13,15 +13,13 @@ mkdir -p "$BIN_DIR" "$UNIT_DIR" "$CONF_DIR"
 install -m 755 "$DIR/ac-lid-guard.sh" "$BIN_DIR/ac-lid-guard.sh"
 install -m 644 "$DIR/ac-lid-guard.service" "$UNIT_DIR/ac-lid-guard.service"
 
-# Default mode is "allow": installing must not change system behavior.
-# Switch to "block" from the StayAwake tray menu (Lid Close on AC).
-if [ ! -f "$CONF_DIR/lid-mode" ]; then
-  echo allow > "$CONF_DIR/lid-mode"
-fi
+# No defaults are written: the shared defaults apply (lid-ac missing =
+# awake on power, lid-battery-mins missing = sleep on close). Adjust the
+# per-source policy from the StayAwake tray menu.
 
 systemctl --user daemon-reload
 systemctl --user enable --now ac-lid-guard.service
 
 echo "lid guard installed and running."
-echo "Switch modes from the StayAwake tray menu: 'Lid Close on AC'."
-echo "Mode file: $CONF_DIR/lid-mode (block = do nothing, allow = suspend)."
+echo "Per-source lid policy lives in the StayAwake tray menu."
+echo "Config files: $CONF_DIR/lid-ac, $CONF_DIR/lid-battery-mins"

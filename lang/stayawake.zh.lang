@@ -33,3 +33,5 @@ SQuit=退出
 STipWork=StayAwake - 防睡中
 STipPause=StayAwake - 已暂停
 SAboutDesc=防止系统因「闲置」而睡眠 / 熄屏 / 锁屏（每 %d 秒移动一次鼠标）。
+SNotifyLidTitle=StayAwake 合盖策略已启用
+SNotifyLidBody=插电合盖不再休眠；用电池合盖照常休眠。可在托盘菜单中调整。
