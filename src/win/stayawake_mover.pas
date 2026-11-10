@@ -11,6 +11,9 @@ uses
 procedure StartMoverThread;
 procedure UpdateExecutionState;
 procedure WakeMoverThread;
+// Put the machine to sleep (drops the ES flags, enables the shutdown
+// privilege, SetSuspendState, then re-applies ES per AppActive).
+procedure SleepNow;
 // Tray calls this when the lid switch state changes (GUID_LIDSWITCH_STATE_CHANGE).
 procedure NotifyLidState(AClosed: Boolean);
 // Diagnostic trail for the lid policy (%TEMP%\stayawake_lid.log).

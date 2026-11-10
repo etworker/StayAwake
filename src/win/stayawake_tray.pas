@@ -351,6 +351,11 @@ begin
     DisableAutoStart;
 end;
 
+procedure HookSleepNow; cdecl;
+begin
+  stayawake_mover.SleepNow;
+end;
+
 // A battery means a portable machine with a lid: desktops report
 // "no battery" (flag bit $80) and an unknown percentage (255).
 function HasBattery: Boolean;
@@ -389,6 +394,10 @@ begin
   TrayHooks.RefreshVisual := @HookRefreshVisual;
   TrayHooks.AutostartState := @HookAutostartState;
   TrayHooks.AutostartRequest := @HookAutostartRequest;
+  // SetSuspendState works unprivileged once SeShutdownPrivilege is enabled
+  // in-process (the mover does that), so Sleep Now is available here too.
+  TrayHooks.HasSleepNow := True;
+  TrayHooks.SleepNow := @HookSleepNow;
   TrayHooks.ApplyAwake := @HookApplyAwake;
   TrayHooks.ApplyLidMode := nil;
   TrayHooks.ApplyLanguage := @HookApplyLanguage;

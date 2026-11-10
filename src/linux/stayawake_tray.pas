@@ -220,6 +220,13 @@ begin
   g_spawn_command_line_async('systemctl --user daemon-reload', nil);
 end;
 
+procedure HookSleepNow; cdecl;
+begin
+  // systemd-logind lets an active local session suspend without a password
+  // (standard polkit rule); this is the same call desktop power menus make.
+  g_spawn_command_line_async('systemctl suspend', nil);
+end;
+
 procedure HookApplyLidMode; cdecl;
 begin
   // "allow": nothing to arm - the guard (if running) reads the mode file
@@ -472,9 +479,11 @@ begin
   TrayLangPackDir := ExtractFilePath(ExpandFileName(ParamStr(0)));
 
   TrayHooks.HasLid := HasBattery;
+  TrayHooks.HasSleepNow := True;
   TrayHooks.RefreshVisual := @HookRefreshVisual;
   TrayHooks.AutostartState := @HookAutostartState;
   TrayHooks.AutostartRequest := @HookAutostartRequest;
+  TrayHooks.SleepNow := @HookSleepNow;
   TrayHooks.ApplyAwake := @HookApplyAwake;
   TrayHooks.ApplyLidMode := @HookApplyLidMode;
   TrayHooks.ApplyLanguage := @HookApplyLanguage;

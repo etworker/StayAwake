@@ -356,7 +356,8 @@ begin
   TrayHooks.Quit := nil;
   MenuActionInvoke(maAbout);
   MenuActionInvoke(maQuit);
-  Check('E14 nil-hook about/quit safe', True);
+  MenuActionInvoke(maSleepNow); // nil SleepNow hook: safe no-op
+  Check('E14 nil-hook about/quit/sleepnow safe', True);
 
   // battery timer minutes: dispatch persists, state reads back
   WriteConfigValue(LidBatteryMinutesPath, '30');
