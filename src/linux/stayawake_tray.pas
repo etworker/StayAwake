@@ -13,7 +13,9 @@ uses
   SysUtils,
   Classes,
   BaseUnix,
+  dynlibs,
   stayawake_common,
+  stayawake_mover,
   stayawake_autostart,
   ctypes,
   gtk2,
@@ -155,69 +157,171 @@ const
           + LineEnding
           + '#'
           + LineEnding
-          + '# While the AC adapter is PHYSICALLY present and mode is "block", hold a'
+          + '# Holds logind inhibitors so that the per-power-source lid policy chosen in'
           + LineEnding
-          + '# logind inhibitor (sleep + handle-lid-switch) so that closing the lid does'
+          + '# the tray takes effect (the kernel''s own lid handling must not fire first):'
           + LineEnding
-          + '# nothing. Reading the adapter state from /sys (kernel) instead of UPower'
+          + '#   on AC,      lid-ac=awake (default) -> sleep:handle-lid-switch inhibitor:'
           + LineEnding
-          + '# makes this immune to UPower AC misdetection bugs.'
+          + '#       closing the lid does nothing, and idle sleep is held too (headless'
+          + LineEnding
+          + '#       use of a closed lid on power keeps working as it always has)'
+          + LineEnding
+          + '#   on battery, lid-ac=awake AND lid-battery-mins != 0 -> handle-lid-switch'
+          + LineEnding
+          + '#       inhibitor only: the close event itself is blocked while a timer'
+          + LineEnding
+          + '#       window can run, but idle sleep is NOT held (sleeping earlier than'
+          + LineEnding
+          + '#       the timer is allowed, same as macOS) and the app''s `systemctl'
+          + LineEnding
+          + '#       suspend` is not blocked by our own inhibitor. The lid-ac gate'
+          + LineEnding
+          + '#       mirrors the engine: the awake-on-power checkbox is the master'
+          + LineEnding
+          + '#       switch for the whole lid policy.'
+          + LineEnding
+          + '# Any other combination -> no inhibitor, system default behavior.'
           + LineEnding
           + '#'
           + LineEnding
-          + '# Mode file: ${XDG_CONFIG_HOME:-$HOME/.config}/stayawake/lid-mode'
+          + '# Config dir: ${XDG_CONFIG_HOME:-$HOME/.config}/stayawake'
           + LineEnding
-          + '#   block = lid close on AC does nothing (guard active)'
+          + '#   lid-ac            awake|default (missing = awake)'
           + LineEnding
-          + '#   allow = system default behavior (GNOME suspends on lid close)'
+          + '#   lid-battery-mins  0|1|5|15|30|60|-1 (missing = 0: sleep on close)'
           + LineEnding
-          + '# The guard reads the mode file every cycle, so the tray can switch modes'
+          + '# The guard re-reads both files every cycle, so the tray can change the'
           + LineEnding
-          + '# without restarting anything.'
+          + '# policy without restarting anything. Reading the adapter state from /sys'
+          + LineEnding
+          + '# (kernel) instead of UPower makes this immune to UPower AC misdetection'
+          + LineEnding
+          + '# bugs.'
           + LineEnding
           + ''
           + LineEnding
-          + 'MODE_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/stayawake/lid-mode"'
+          + 'CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/stayawake"'
+          + LineEnding
+          + ''
+          + LineEnding
+          + 'ac_online() { grep -q "^1$" /sys/class/power_supply/A*/online 2>/dev/null; }'
+          + LineEnding
+          + ''
+          + LineEnding
+          + '# What should be inhibited right now: "both" (on AC, awake on close),'
+          + LineEnding
+          + '# "lid" (on battery, policy on and a timer or never mode is armed), or "none".'
+          + LineEnding
+          + 'desired() {'
+          + LineEnding
+          + '  if ac_online; then'
+          + LineEnding
+          + '    if [ "$(cat "$CONF_DIR/lid-ac" 2>/dev/null || echo awake)" = "awake" ]; then'
+          + LineEnding
+          + '      echo both'
+          + LineEnding
+          + '      return'
+          + LineEnding
+          + '    fi'
+          + LineEnding
+          + '  elif [ "$(cat "$CONF_DIR/lid-ac" 2>/dev/null || echo awake)" = "awake" ] \'
+          + LineEnding
+          + '       && [ "$(cat "$CONF_DIR/lid-battery-mins" 2>/dev/null || echo 0)" != "0" ]; then'
+          + LineEnding
+          + '    echo lid'
+          + LineEnding
+          + '    return'
+          + LineEnding
+          + '  fi'
+          + LineEnding
+          + '  echo none'
+          + LineEnding
+          + '}'
           + LineEnding
           + ''
           + LineEnding
           + 'while :; do'
           + LineEnding
-          + '  MODE=$(cat "$MODE_FILE" 2>/dev/null || echo allow)'
+          + '  case "$(desired)" in'
           + LineEnding
-          + '  if [ "$MODE" = "block" ] && grep -q "^1$" /sys/class/power_supply/A*/online 2>/dev/null; then'
+          + '    both)'
           + LineEnding
-          + '    systemd-inhibit --what=sleep:handle-lid-switch --who="StayAwake lid-guard" \'
+          + '      systemd-inhibit --what=sleep:handle-lid-switch --who="StayAwake lid-guard" \'
           + LineEnding
-          + '      --why="AC lid close = do nothing (user choice)" \'
+          + '        --why="AC lid close = do nothing (user choice)" \'
           + LineEnding
-          + '      bash -c ''MF="${XDG_CONFIG_HOME:-$HOME/.config}/stayawake/lid-mode"; while [ "$(cat "$MF" 2>/dev/null || echo allow)" = "block" ] && grep -q "^1$" /sys/class/power_supply/A*/online 2>/dev/null; do sleep 3; done'''
+          + '        bash -c ''CONF="${XDG_CONFIG_HOME:-$HOME/.config}/stayawake"; while [ "$(cat "$CONF/lid-ac" 2>/dev/null || echo awake)" = "awake" ] && grep -q "^1$" /sys/class/power_supply/A*/online 2>/dev/null; do sleep 3; done'''
           + LineEnding
-          + '  else'
+          + '      ;;'
           + LineEnding
-          + '    sleep 3'
+          + '    lid)'
           + LineEnding
-          + '  fi'
+          + '      systemd-inhibit --what=handle-lid-switch --who="StayAwake lid-guard" \'
+          + LineEnding
+          + '        --why="battery lid timer armed" \'
+          + LineEnding
+          + '        bash -c ''CONF="${XDG_CONFIG_HOME:-$HOME/.config}/stayawake"; while [ "$(cat "$CONF/lid-ac" 2>/dev/null || echo awake)" = "awake" ] && [ "$(cat "$CONF/lid-battery-mins" 2>/dev/null || echo 0)" != "0" ] && ! grep -q "^1$" /sys/class/power_supply/A*/online 2>/dev/null; do sleep 3; done'''
+          + LineEnding
+          + '      ;;'
+          + LineEnding
+          + '    *)'
+          + LineEnding
+          + '      sleep 3'
+          + LineEnding
+          + '      ;;'
+          + LineEnding
+          + '  esac'
           + LineEnding
           + 'done'
           + LineEnding;
 
+function TextFileDiffers(const path, content: string): Boolean;
+var
+  sl: TStringList;
+begin
+  Result := True;
+  if not FileExists(path) then
+    Exit;
+  sl := TStringList.Create;
+  try
+    try
+      sl.LoadFromFile(path);
+      Result := sl.Text <> content;
+    except
+      Result := True; // unreadable: rewrite it
+    end;
+  finally
+    sl.Free;
+  end;
+end;
+
 procedure EnsureLidGuardInstalled;
 var
   Home, UnitPath, ScriptPath: string;
+  changed: Boolean;
 begin
   Home := GetEnvironmentVariable('HOME');
   if Home = '' then
     Exit;
   UnitPath := Home + '/.config/systemd/user/ac-lid-guard.service';
   ScriptPath := Home + '/.local/bin/ac-lid-guard.sh';
-  if FileExists(UnitPath) and FileExists(ScriptPath) then
-    Exit;
-  WriteTextFile(ScriptPath, GUARD_SH);
-  FpChmod(PAnsiChar(ScriptPath), &755);
-  WriteTextFile(UnitPath, GUARD_UNIT);
-  FpChmod(PAnsiChar(UnitPath), &644);
-  g_spawn_command_line_async('systemctl --user daemon-reload', nil);
+  // Rewrite whenever the embedded copy differs from what is installed: this
+  // upgrades older installs (which shipped the lid-mode-based script) in
+  // place, without touching the user's config choices.
+  changed := False;
+  if TextFileDiffers(ScriptPath, GUARD_SH) then begin
+    WriteTextFile(ScriptPath, GUARD_SH);
+    FpChmod(PAnsiChar(ScriptPath), &755);
+    changed := True;
+  end;
+  if TextFileDiffers(UnitPath, GUARD_UNIT) then begin
+    WriteTextFile(UnitPath, GUARD_UNIT);
+    FpChmod(PAnsiChar(UnitPath), &644);
+    changed := True;
+  end;
+  if changed then
+    g_spawn_command_line_async('systemctl --user daemon-reload', nil);
 end;
 
 procedure HookSleepNow; cdecl;
@@ -229,13 +333,18 @@ end;
 
 procedure HookApplyLidMode; cdecl;
 begin
-  // "allow": nothing to arm - the guard (if running) reads the mode file
-  // every cycle and stands down by itself.
-  if LidMode <> 'block' then
-    Exit;
-  // "block": self-install the component if missing, then arm it.
+  // The guard re-reads the config files every cycle, so a policy change
+  // needs no re-arm; this hook only makes sure the component is installed
+  // and running. Idempotent: safe to call on every lid option change and on
+  // every startup with a lid.
   EnsureLidGuardInstalled;
   g_spawn_command_line_async('systemctl --user enable --now ac-lid-guard.service', nil);
+end;
+
+procedure HookSleepNow; cdecl;
+begin
+  // Rootless on systemd; the same execution path the lid policy uses.
+  SystemSuspend;
 end;
 
 procedure HookShowAbout; cdecl;
@@ -370,16 +479,28 @@ var
   i: Integer;
 begin
   // gtk_check_menu_item_set_active emits 'toggled', which would re-enter the
-  // action dispatcher; block each handler around the programmatic sync.
+  // action dispatcher. Blocking per item is NOT enough: activating a radio
+  // item makes GTK deactivate the previously-active group member, emitting
+  // 'toggled' on THAT item - outside the blocked window. Block every handler
+  // for the whole pass instead.
   for i := 0 to High(Bindings) do
     with Bindings[i] do
       case Node^.Kind of
-        mkCheck, mkRadio: begin
-          g_signal_handler_block(Widget, Handler);
-          gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(Widget), MenuActionState(Node^.Action));
-          g_signal_handler_unblock(Widget, Handler);
-        end;
+        mkCheck, mkRadio: g_signal_handler_block(Widget, Handler);
       end;
+  try
+    for i := 0 to High(Bindings) do
+      with Bindings[i] do
+        case Node^.Kind of
+          mkCheck, mkRadio: gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(Widget), MenuActionState(Node^.Action));
+        end;
+  finally
+    for i := 0 to High(Bindings) do
+      with Bindings[i] do
+        case Node^.Kind of
+          mkCheck, mkRadio: g_signal_handler_unblock(Widget, Handler);
+        end;
+  end;
 end;
 
 procedure TraySetVisual;
@@ -467,6 +588,74 @@ begin
   end;
 end;
 
+var
+  // Set by MigrateLidConfig when the first-run defaults were just written;
+  // the bubble is shown from TrayCreate, after gtk_init.
+  gNotifyLidPending: Boolean = False;
+
+// One-time notification bubble announcing the awake-on-power default, so
+// the behavior is never silent. libnotify is loaded dynamically: a desktop
+// without the library or a notification daemon skips the bubble quietly.
+procedure NotifyLidDefault;
+type
+  TNotifyInit = function(app_name: PAnsiChar): LongBool; cdecl;
+  TNotifyNew = function(summary, body, icon: PAnsiChar; parent: Pointer): Pointer; cdecl;
+  TNotifyShow = function(n: Pointer; err: Pointer): LongBool; cdecl;
+const
+  LIBNAMES: array[0..1] of PChar = ('libnotify.so.4', 'libnotify.so');
+var
+  h: TLibHandle;
+  notify_init: TNotifyInit;
+  notify_notification_new: TNotifyNew;
+  notify_notification_show: TNotifyShow;
+  n: Pointer;
+  i: Integer;
+begin
+  h := NilHandle;
+  for i := Low(LIBNAMES) to High(LIBNAMES) do begin
+    h := LoadLibrary(LIBNAMES[i]);
+    if h <> NilHandle then
+      Break;
+  end;
+  if h = NilHandle then
+    Exit;
+  notify_init := TNotifyInit(GetProcAddress(h, 'notify_init'));
+  notify_notification_new := TNotifyNew(GetProcAddress(h, 'notify_notification_new'));
+  notify_notification_show := TNotifyShow(GetProcAddress(h, 'notify_notification_show'));
+  if (notify_init = nil) or (notify_notification_new = nil) or (notify_notification_show = nil) then
+    Exit;
+  if not notify_init('StayAwake') then
+    Exit;
+  n := notify_notification_new(PAnsiChar(L('SNotifyLidTitle')), PAnsiChar(L('SNotifyLidBody')), nil, nil);
+  if n <> nil then
+    notify_notification_show(n, nil);
+end;
+
+// Legacy guard-style config maps onto the per-source files (the same
+// mapping the macOS tray applies), and a fresh battery machine gets the
+// shared default - awake on power - written explicitly, so the menu radios
+// tell the truth from the first launch. The battery default (sleep on
+// close) needs no file: a missing lid-battery-mins already means 0.
+procedure MigrateLidConfig;
+begin
+  if (not TrayHooks.HasLid) or (TrayConfigDir = '') then
+    Exit;
+  if FileExists(LidFilePath) then begin
+    // Old lid-mode file: express the same behavior per source, once.
+    if (LidMode = 'block') and (not FileExists(LidAcAwakePath)) then begin
+      SetLidAcAwake(True);
+      if not FileExists(LidBatteryMinutesPath) then
+        WriteConfigValue(LidBatteryMinutesPath, '15');
+    end
+    else if (LidMode = 'allow') and (not FileExists(LidAcAwakePath)) then
+      SetLidAcAwake(False);
+  end
+  else if not FileExists(LidAcAwakePath) then begin
+    SetLidAcAwake(True);
+    gNotifyLidPending := True;
+  end;
+end;
+
 procedure InitPlatformConfig;
 begin
   TrayConfigDir := GetEnvironmentVariable('XDG_CONFIG_HOME');
@@ -479,7 +668,8 @@ begin
   TrayLangPackDir := ExtractFilePath(ExpandFileName(ParamStr(0)));
 
   TrayHooks.HasLid := HasBattery;
-  TrayHooks.HasSleepNow := True;
+  TrayHooks.HasSleepNow := True; // systemctl suspend needs no privileges
+  TrayHooks.LidPerSource := True; // same flat per-source lid menu as macOS
   TrayHooks.RefreshVisual := @HookRefreshVisual;
   TrayHooks.AutostartState := @HookAutostartState;
   TrayHooks.AutostartRequest := @HookAutostartRequest;
@@ -490,6 +680,7 @@ begin
   TrayHooks.ShowAbout := @HookShowAbout;
   TrayHooks.Quit := @HookQuit;
   TraySystemLang := @HookSystemLang;
+  MigrateLidConfig;
 end;
 
 procedure TrayCreate;
@@ -506,7 +697,7 @@ begin
   gtk_status_icon_set_visible(StatusIcon, TRUE);
   gtk_status_icon_set_tooltip(StatusIcon, 'StayAwake');
 
-  MenuRoot := BuildTrayMenu(TrayHooks.HasLid, TrayHooks.HasSleepNow, False);
+  MenuRoot := BuildTrayMenu(TrayHooks.HasLid, TrayHooks.HasSleepNow, TrayHooks.LidPerSource);
   TrayMenu := gtk_menu_new;
   FillMenu(TrayMenu, MenuRoot);
 
@@ -516,11 +707,16 @@ begin
   g_signal_connect(StatusIcon, 'popup-menu', TGCallback(@TrayPopupSignal), nil);
 
   TraySetVisual;
-  // Self-heal: if the user opted into "Do Nothing" and the guard service is
-  // not running (e.g. fresh login with a stale unit), bring it back up.
+  // Self-heal: on every machine with a lid make sure the guard component is
+  // installed and running - fresh installs rely on it for the default
+  // awake-on-power policy; upgraded installs get their script refreshed.
   // Batteryless machines never touch the guard at all.
-  if TrayHooks.HasLid and (LidMode = 'block') then
+  if TrayHooks.HasLid then
     HookApplyLidMode;
+  if gNotifyLidPending then begin
+    gNotifyLidPending := False;
+    NotifyLidDefault;
+  end;
   gtk_main;
 end;
 

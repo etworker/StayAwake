@@ -29,15 +29,25 @@
 ```
 [✓] 保持清醒 (阻止闲置睡眠)
 ────────────────────────────
-合盖行为(接电源时) ▸        ← Linux / macOS；Windows 无此项
-[ ] 不动作(守卫拦截睡眠)
-[•] 睡眠(系统默认)
+合盖时 ▸                    ← 带电池的设备（无电池整组隐藏）
+  [接电源]                  ← 灰色小节标题
+  [✓] 保持运行(合盖不休眠)
+  ────────────────────
+  [用电池]
+  [•] 合盖睡眠(默认)
+  [ ] 保持清醒 1 分钟后睡眠   ← 5/15/30/60 分钟同组
+  [ ] 盒盖不睡(直到没电关机)
+  ────────────────────
+  [低电量]
+  [•] 15% 睡眠(默认)         ← 关闭 / 10 / 20 / 25% 同组
 [✓] 开机自启
 ────────────────────────────
 语言 / Language ▸
 [•] 跟随系统
 [ ] English
 [ ] 中文
+────────────────────────────
+立即睡眠                    ← macOS / Linux
 ────────────────────────────
 关于 StayAwake
 退出
@@ -48,13 +58,26 @@
 
 ## 合盖行为（FR-7）
 
-模式持久化为文本文件（`block` / `allow`），**写入与读取统一在共享核心**（`stayawake_common` 的 `LidMode`/`SetLidMode`），平台只实现「应用」动作。
+三平台共用同一套**配置、菜单与决策引擎**，平台只实现「探测 / 执行 / 强制」三件事：
+
+- **配置**（`stayawake_common`）：`lid-ac`（`awake`/`default`，缺省 awake）、`lid-battery-mins`（`0`=合盖即睡、`1..60` 分钟、`-1`=直到耗尽，缺省 0）、`lid-battery-pct`（底线，缺省 15，`0`=关闭）。旧的 `lid-mode`（`block`/`allow`）已迁移废弃：`block` → `lid-ac=awake`+`mins=15`，`allow` → `lid-ac=default`（与 macOS 迁移同一套映射）；
+- **决策引擎**（`stayawake_lidpolicy`，纯函数可单测）：`LidEngineTick` 维护合盖片段状态（合盖起点计时、开盖复位、一次性触发标志），每 tick 调 `LidDecide` 产出「强制档位 + 是否立即睡」。电池侧两个睡眠条件赛跑，先到先得：定时器到期、电量触底（底线与定时模式无关，也约束 `-1` 档；电量未知永不触发）；
+- **平台差异**用一个布尔概括：`KernelHandlesClose`。macOS/Linux 内核会处理合盖事件（clamshell / logind），`mins=0` 的「合盖即睡」交给 OS，引擎只在电池侧主动入睡；Windows 内核盖子动作被安装期一次性禁用，`KernelHandlesClose=False`，所有「应睡」的合盖都由应用主动执行（`ldrClose` 分支），且电池定时/底线不受「保持运行」勾选约束。
+
+| 平台 | 探测 | 执行（主动入睡） | 强制（拦合盖事件） |
+| ---- | ---- | ---- | ---- |
+| Linux | `/proc/acpi/button/lid/*/state`（无则视为无盖）+ `/sys` 电源电量，2s tick | `systemctl suspend`（免提权） | 守卫脚本持 logind inhibitor，见下 |
+| macOS | IORegistry `AppleClamshellState` 轮询 + `pmset -g batt`（缓存 5 tick） | `pmset -b disablesleep 0` + `pmset sleepnow` | `pmset disablesleep` 按电源分档，每 tick 变化才重申（自愈外部干扰） |
+| Windows | `WM_POWERBROADCAST` 合盖事件推送 + `GetSystemPowerStatus` | `SetSuspendState`（`SeShutdownPrivilege` 免管理员） | 安装期 `powercfg LIDACTION 0`（静态，运行期无操作） |
 
 ### Linux：用户级 systemd 守卫
 
-- `src/linux/lid-guard/install.sh` 安装 `ac-lid-guard.service`（用户服务，免 sudo）；
-- 守卫进程在**插电**时持有 logind inhibitor 锁拦截合盖睡眠；电源状态直接读内核 `/sys`，因此免疫 GNOME/UPower 的电源误判（实测修复过 XPS 13 + Ubuntu 22.04 上「插着电却被按电池策略合盖睡眠」的案例）；
-- 切到「不动作」时托盘调用 `systemctl --user enable --now` 自愈拉起服务；电池合盖始终系统默认。
+- 守卫进程（`ac-lid-guard.service`，用户服务免 sudo）**不需要知道合盖状态**——inhibit 与否可由「配置文件 + 电源状态」直接算出，脚本每 3s 重读配置：
+  - 插电且 `lid-ac=awake`（缺省）→ 持有 `sleep:handle-lid-switch` inhibitor（合盖不动作；连空闲睡眠一并持有，保住「合盖无头用法」的历史行为）；
+  - 电池且 `lid-ac=awake` 且 `lid-battery-mins≠0` → 仅持 `handle-lid-switch` inhibitor（只拦合盖事件，让定时窗口内的空闲睡眠先行——语义同 macOS「至多保持 N 分钟」，也避免自家 inhibitor 挡住 `systemctl suspend`；`lid-ac` 门控与引擎侧一致：插电「保持运行」勾选是整个合盖策略的总开关）；
+  - 其余组合不持锁，系统默认行为；
+- 托盘启动即幂等确保守卫安装并运行（`HookApplyLidMode`），内嵌组件与已安装内容不一致时原位升级脚本；电源状态直接读内核 `/sys`，免疫 GNOME/UPower 的电源误判（实测修复过 XPS 13 + Ubuntu 22.04 上「插着电却被按电池策略合盖睡眠」的案例）；
+- 首次运行（无任何 lid 配置）写入共享默认 `lid-ac=awake` 并弹一次 libnotify 气泡告知；手动安装器 `lid-guard/install.sh` 保留，行为等同。
 
 ### macOS：pmset disablesleep + 应用菜单「立即睡眠」
 
@@ -66,14 +89,14 @@
 
 **最终方案（用户确认）**：接受第 3 项的代价，睡眠入口改由应用提供；切换与「立即睡眠」通过一次性安装的白名单 sudoers 条目实现**永久免密**（`src/macos/guard/install.sh`，sudo 运行一次，卸载用 `uninstall.sh`）——
 
-- 合盖子菜单（macOS）切换 `disablesleep`：「保持唤醒(合盖不睡眠)」/「系统默认(合盖睡眠)」，勾选直接反映 pmset 真实状态（`pmset -g` 的 `SleepDisabled` 标志，经 libc `popen` 读取）；
-- 点选与真实状态不符的一侧时弹出引导对话框，给出一次性命令（`sudo pmset -a disablesleep 1` / `... 0`）并自动复制到剪贴板；
-- **菜单新增「立即睡眠」**：`pmset sleepnow`（免 root，实测在 `disablesleep 1` 下依然生效，日志 `Software Sleep pid=…` 为证）——系统菜单「睡眠」失效后，这就是休眠入口；
+- 合盖菜单按电源分档断言 `disablesleep`，勾选状态反映共享配置文件；
+- 首次点选合盖项且守护未安装时弹出引导对话框，给出一次性命令并自动复制到剪贴板；
+- **菜单「立即睡眠」**：`pmset sleepnow`（免 root，实测在 `disablesleep 1` 下依然生效，日志 `Software Sleep pid=…` 为证）——系统菜单「睡眠」失效后，这就是休眠入口；
 - 睡眠协商（配合逻辑）保留：显式睡眠（含 `sleepnow`）发生时立即应答放行并释放防睡断言，唤醒后自动重建（实测 4ms 应答、无超时记录）。
 
-### Windows：不提供
+### Windows：一次性管理员 + 全程免管理员运行
 
-修改合盖策略需要管理员写入 `HKLM\SYSTEM\...\Power`，且管控机普遍隐藏该设置。菜单中直接不出现合盖项（共享菜单树的 `HasLid=False`）。
+运行期策略全部免管理员（`SetSuspendState` 只需用户令牌里默认持有的 `SeShutdownPrivilege`）；唯一的管理员步骤是安装期把内核盖子动作设为「不采取任何操作」（`powercfg /setacvalueindex … LIDACTION 0` + `/setdcvalueindex … 0`），否则内核在应用介入前就睡了。此后合盖事件经 `WM_POWERBROADCAST`（`GUID_LIDSWITCH_STATE_CHANGE`，需隐藏的顶级窗口接收）推送给应用。
 
 ## 开机自启（FR-6）
 
@@ -110,4 +133,7 @@
 | 文件 | Linux | Windows | macOS |
 | ---- | ---- | ---- | ---- |
 | 语言 | `~/.config/stayawake/lang` | `%APPDATA%\stayawake\lang` | `~/Library/Application Support/stayawake/lang` |
-| 合盖模式 | `~/.config/stayawake/lid-mode` | —（无此功能） | `~/Library/Application Support/stayawake/lid-mode` |
+| 插电合盖 | `~/.config/stayawake/lid-ac` | `%APPDATA%\stayawake\lid-ac` | `~/Library/Application Support/stayawake/lid-ac` |
+| 电池合盖定时 | `~/.config/stayawake/lid-battery-mins` | `%APPDATA%\stayawake\lid-battery-mins` | `~/Library/Application Support/stayawake/lid-battery-mins` |
+| 电量底线 | `~/.config/stayawake/lid-battery-pct` | `%APPDATA%\stayawake\lid-battery-pct` | `~/Library/Application Support/stayawake/lid-battery-pct` |
+| 旧合盖模式（迁移废弃） | `~/.config/stayawake/lid-mode` | — | `~/Library/Application Support/stayawake/lid-mode` |

@@ -184,6 +184,29 @@ begin
     Result := Length(N^.Sub);
 end;
 
+// No two separators may ever be adjacent anywhere in the tree: renderers
+// draw them as a double line. Recursive over submenus.
+function NoConsecutiveSeps(Root: PMenuNode): Boolean;
+var
+  i: Integer;
+  PrevSep: Boolean;
+begin
+  Result := True;
+  PrevSep := False;
+  for i := 0 to High(Root^.Sub) do begin
+    if Root^.Sub[i]^.Kind = mkSep then begin
+      if PrevSep then
+        Exit(False);
+      PrevSep := True;
+    end
+    else begin
+      PrevSep := False;
+      if (Root^.Sub[i]^.Kind = mkSubmenu) and (not NoConsecutiveSeps(Root^.Sub[i])) then
+        Exit(False);
+    end;
+  end;
+end;
+
 procedure TestMenuTree;
 var
   Root, Lid, Lang, Bat: PMenuNode;
@@ -211,6 +234,7 @@ begin
   );
   Check('D7 separators present', (Root^.Sub[1]^.Kind = mkSep) and (Root^.Sub[4]^.Kind = mkSep));
   Check('D8 quit is last', Root^.Sub[9]^.Action = maQuit);
+  Check('D8b lid tree has no double separators', NoConsecutiveSeps(Root));
   FreeTrayMenu(Root);
 
   Root := BuildTrayMenu(False, False, False);
@@ -224,18 +248,21 @@ begin
   Root := BuildTrayMenu(False, True, False);
   Check('D12 sleepnow tree has 11 top nodes', CountChildren(Root) = 11);
   Check(
-      'D13 sleepnow item placed before the About group',
-      (Root^.Sub[5]^.Kind = mkItem)
-          and (Root^.Sub[5]^.Action = maSleepNow)
-          and (Root^.Sub[6]^.Kind = mkSep)
+      'D13 sleepnow item before the About group, single separator',
+      (Root^.Sub[5]^.Kind = mkSep)
+          and (Root^.Sub[6]^.Kind = mkItem)
+          and (Root^.Sub[6]^.Action = maSleepNow)
+          and (Root^.Sub[7]^.Kind = mkSep)
           and (Root^.Sub[8]^.Action = maAbout)
   );
-  Check('D14 sleepnow label key', Root^.Sub[5]^.Text = 'SSleepNow');
+  Check('D14 sleepnow label key', Root^.Sub[6]^.Text = 'SSleepNow');
+  Check('D14b sleepnow tree has no double separators', NoConsecutiveSeps(Root));
   FreeTrayMenu(Root);
 
   // macOS per-source tree: flat sections - AC checkbox + battery radios
   Root := BuildTrayMenu(True, True, True);
   Check('D12b full mac tree has 12 top nodes', CountChildren(Root) = 12);
+  Check('D12b2 mac tree has no double separators', NoConsecutiveSeps(Root));
   Lid := Root^.Sub[2];
   Check('D12c lid submenu is flat with 18 children', CountChildren(Lid) = 18);
   Check(
@@ -425,9 +452,14 @@ procedure TestLidPolicy;
 var
   d: TLidDecision;
 
-  procedure Decide(AcAwake, LidClosed, OnAC: Boolean; Mins, Elapsed, Pct, Floor: Integer; Sent: Boolean);
+  procedure Decide(
+      AcAwake, LidClosed, OnAC: Boolean;
+      Mins, Elapsed, Pct, Floor: Integer;
+      Sent: Boolean;
+      KernelHandlesClose: Boolean = True
+  );
   begin
-    d := LidDecide(AcAwake, LidClosed, OnAC, Mins, Elapsed, Pct, Floor, Sent);
+    d := LidDecide(AcAwake, LidClosed, OnAC, Mins, Elapsed, Pct, Floor, Sent, KernelHandlesClose);
   end;
 
 begin
@@ -442,13 +474,13 @@ begin
   Check('G2 battery closed before expiry keeps awake', (d.WantB = 1) and (not d.SleepNow) and (d.Reason = ldrNone));
   // Timer expires exactly at Mins*60 seconds.
   Decide(True, True, False, 15, 900, 40, 15, False);
-  Check('G3 timer fires at exactly 900 s', d.SleepNow and (d.WantB = 0) and d.BatSleepSent and (d.Reason = ldrTimer));
+  Check('G3 timer fires at exactly 900 s', d.SleepNow and (d.WantB = 0) and d.Sent and (d.Reason = ldrTimer));
   // Floor fires long before the timer would.
   Decide(True, True, False, 15, 120, 15, 15, False);
   Check('G4 floor fires at charge floor', d.SleepNow and (d.WantB = 0) and (d.Reason = ldrLowBattery));
   // Both conditions true on the same tick: floor wins (branch order).
   Decide(True, True, False, 15, 900, 10, 15, False);
-  Check('G5 floor wins over timer same tick', d.SleepNow and (d.Reason = ldrLowBattery) and d.BatSleepSent);
+  Check('G5 floor wins over timer same tick', d.SleepNow and (d.Reason = ldrLowBattery) and d.Sent);
   // Never-sleep mode (-1): timer can never fire, floor still bounds it.
   Decide(True, True, False, -1, 100000, 90, 15, False);
   Check('G6 never mode holds awake without floor hit', (d.WantB = 1) and (not d.SleepNow));
@@ -476,7 +508,27 @@ begin
   Check('G14 on AC battery sleep never fires', (d.WantC = 1) and (d.WantB = 1) and (not d.SleepNow));
   // One-shot: sent=True suppresses everything, profile stays disarmed.
   Decide(True, True, False, 15, 900, 5, 15, True);
-  Check('G15 sent=True no re-fire', (not d.SleepNow) and (d.WantB = 0) and d.BatSleepSent and (d.Reason = ldrNone));
+  Check('G15 sent=True no re-fire', (not d.SleepNow) and (d.WantB = 0) and d.Sent and (d.Reason = ldrNone));
+
+  // KernelHandlesClose=False (Windows semantics, LidDecide 10th arg):
+  // closes that should end in sleep must be executed by the app itself.
+  Decide(False, True, True, 15, 60, 80, 15, False, False);
+  Check('G21 win ac close checkbox off sleeps', d.SleepNow and d.Sent and (d.Reason = ldrClose));
+  Decide(True, True, True, 15, 60, 80, 15, False, False);
+  Check('G22 win ac close checkbox on holds', (not d.SleepNow) and (d.Reason = ldrNone));
+  Decide(True, True, False, 0, 60, 80, 15, False, False);
+  Check('G23 win battery mins=0 sleeps', d.SleepNow and (d.Reason = ldrClose));
+  // Floor still wins over the immediate close on the same tick.
+  Decide(True, True, False, 0, 60, 10, 15, False, False);
+  Check('G24 win mins=0 floor wins same tick', d.SleepNow and (d.Reason = ldrLowBattery));
+  // Windows battery timer runs even with the checkbox off (G12 counterpart).
+  Decide(False, True, False, 15, 900, 80, 15, False, False);
+  Check('G25 win timer runs with checkbox off', d.SleepNow and (d.Reason = ldrTimer));
+  Decide(False, True, False, -1, 90000, 80, 15, False, False);
+  Check('G26 win never mode holds', (not d.SleepNow));
+  // macOS/Linux (True, default): checkbox off keeps the whole policy off.
+  Decide(False, True, False, 0, 900, 80, 15, False, True);
+  Check('G27 mac mins=0 checkbox off no sleep', (not d.SleepNow) and (d.Reason = ldrNone));
 
   // ParseChargePct against real pmset -g batt shapes.
   Check(
@@ -495,6 +547,64 @@ begin
   Check('G18 single digit pct', ParseChargePct('7%; discharging') = 7);
   Check('G19 no percent -> -1', ParseChargePct('nothing here') = -1);
   Check('G20 bare percent -> -1', ParseChargePct('%; foo') = -1);
+end;
+
+// ---- H. lid engine state machine (stayawake_lidpolicy) ----------------------
+
+procedure TestLidEngine;
+var
+  S: TLidEngineState;
+  d: TLidDecision;
+
+  procedure Tick(Known, Closed, OnAC, AcAwake: Boolean; Mins, Pct, Floor: Integer; NowMs: Int64; Kernel: Boolean);
+  begin
+    d := LidEngineTick(S, Known, Closed, OnAC, AcAwake, Mins, Pct, Floor, Kernel, NowMs);
+  end;
+
+begin
+  // Open: enforcement computed, episode state clean.
+  LidEngineReset(S);
+  Tick(True, False, True, True, 15, 80, 15, 1000, True);
+  Check(
+      'H1 open tick arms and resets',
+      (d.WantC = 1) and (d.WantB = 1) and (not d.SleepNow) and (not S.WasClosed) and (S.ClosedSinceMs = 0)
+  );
+  // Close edge starts the clock; a second before expiry holds.
+  Tick(True, True, False, True, 1, 80, 15, 5000, True);
+  Check('H2 close edge starts clock', S.WasClosed and (S.ClosedSinceMs = 5000) and (not d.SleepNow) and (d.WantB = 1));
+  Tick(True, True, False, True, 1, 80, 15, 59000, True);
+  Check('H3 timer holds at 54 s', (not d.SleepNow));
+  // Expiry: 1 min option fires 60 s after the close was first seen.
+  Tick(True, True, False, True, 1, 80, 15, 65000, True);
+  Check('H4 timer fires at 60 s', d.SleepNow and (d.Reason = ldrTimer) and d.Sent and (S.Sent = True));
+  // One-shot: staying closed never re-fires.
+  Tick(True, True, False, True, 1, 80, 15, 100000, True);
+  Check('H5 no re-fire while closed', (not d.SleepNow) and (d.Reason = ldrNone));
+  // Reopen resets the one-shot; the next close starts a fresh episode.
+  Tick(True, False, False, True, 1, 80, 15, 110000, True);
+  Check('H6 reopen resets episode', (not S.WasClosed) and (not S.Sent));
+  Tick(True, True, False, True, 1, 80, 15, 112000, True);
+  Check('H7 fresh episode re-arms', (not d.SleepNow) and (S.ClosedSinceMs = 112000) and (not S.Sent));
+  // Unknown lid (no probe): never fires, never tracks an episode.
+  LidEngineReset(S);
+  Tick(False, False, False, True, 1, 80, 15, 1000, True);
+  Check('H8 unknown lid no fire', (not d.SleepNow) and (not S.WasClosed));
+  Tick(False, True, False, True, 1, 80, 15, 200000, True);
+  Check('H9 unknown lid closed still no fire', (not d.SleepNow) and (not S.WasClosed));
+  // Clock went backwards mid-episode: hold instead of firing early.
+  LidEngineReset(S);
+  Tick(True, True, False, True, 1, 80, 15, 10000, True);
+  Tick(True, True, False, True, 1, 80, 15, 5000, True);
+  Check('H10 backwards clock holds', (not d.SleepNow));
+  // Windows mode (KernelHandlesClose=False): battery mins=0 sleeps on the
+  // close tick itself, once per episode.
+  LidEngineReset(S);
+  Tick(True, True, False, True, 0, 80, 15, 1000, False);
+  Check('H11 win mins=0 fires on close tick', d.SleepNow and (d.Reason = ldrClose) and S.Sent);
+  Tick(True, True, False, True, 0, 80, 15, 60000, False);
+  Check('H12 win one-shot holds', (not d.SleepNow));
+  Tick(True, False, False, True, 0, 80, 15, 70000, False);
+  Check('H13 win reopen re-arms', (not S.Sent));
 end;
 
 // ---- F. icon pixels ---------------------------------------------------------
@@ -559,6 +669,7 @@ begin
   TestStatesAndDispatch;
   TestIconPixels;
   TestLidPolicy;
+  TestLidEngine;
   WriteLn(Format('== %d checks, %d failures ==', [CheckCount, FailCount]));
   if FailCount > 0 then
     ExitCode := 1;

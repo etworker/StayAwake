@@ -64,7 +64,7 @@ stayawake/
 
 ```pascal
 TTrayHooks = record
-  HasLid: Boolean;               // Windows = False，菜单树不生成合盖子菜单
+  HasLid: Boolean;               // 无电池设备 = False，菜单树不生成合盖子菜单
   RefreshVisual, ApplyAwake, ApplyLidMode,
   ApplyLanguage, ShowAbout, Quit: procedure; cdecl;
 end;

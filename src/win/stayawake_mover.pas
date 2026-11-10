@@ -25,7 +25,8 @@ uses
   Classes,
   SysUtils,
   SyncObjs,
-  Windows;
+  Windows,
+  stayawake_lidpolicy;
 
 {$IFDEF WINDOWS}
 const
@@ -73,21 +74,19 @@ begin
     WakeEvent.SetEvent;
 end;
 
-// ---- Lid-close policy (Windows, mirrors the macOS mover) --------------------
+// ---- Lid-close policy (Windows, via the shared engine) ----------------------
 // Requires a one-time admin step: set the lid action to "Do nothing" for
-// both AC and battery (scripts/setup-lid.cmd / powercfg), otherwise the
-// kernel sleeps on close and nothing here can intercept it. After that the
-// whole policy runs unprivileged:
-//   AC close:      awake checkbox on -> stay awake (ES flags); off -> sleep now
-//   battery close: mins = 0 -> sleep now; mins = N -> stay awake N minutes
-//                  then sleep; mins < 0 -> stay awake until the battery dies
-// After a timer sleep the policy stays hands-off until the lid opens again
-// (waking by any other means with the lid closed does not re-arm it).
+// both AC and battery (powercfg, see docs/04-usage.md), otherwise the kernel
+// sleeps on close and nothing here can intercept it. After that the whole
+// policy runs unprivileged through LidEngineTick (stayawake_lidpolicy) with
+// KernelHandlesClose=False: closes that should end in sleep are executed
+// here (SetSuspendState), battery timer/floor run regardless of the awake
+// checkbox. After a sleep the engine stays hands-off until the lid opens
+// again (waking by any other means with the lid closed does not re-arm it).
 
 var
-  gLidClosed: Boolean = False;
-  gClosedAtMs: Int64 = 0;
-  gHandledClose: Boolean = False; // already slept for this closing
+  gLidClosed: Boolean = False; // pushed from the tray's power notification
+  gEngine: TLidEngineState;
 
 procedure LidLog(const S: string);
 var
@@ -153,10 +152,6 @@ procedure NotifyLidState(AClosed: Boolean);
 begin
 {$IFDEF WINDOWS}
   gLidClosed := AClosed;
-  if AClosed then begin
-    gClosedAtMs := GetTick64;
-    gHandledClose := False;
-  end;
   if AClosed then
     LidLog('lid closed')
   else
@@ -166,55 +161,43 @@ begin
 {$ENDIF}
 end;
 
-// One policy step; called from the mover loop on every tick. Fine-grained
-// ticking (500 ms) only while a lid timer can be pending.
+// One policy step through the shared engine; called from the mover loop on
+// every tick. Fine-grained ticking (500 ms) only while a lid timer can be
+// pending, i.e. the lid is closed and the episode has not fired yet.
 procedure LidPolicyTick;
 var
   S: TSystemPowerStatus;
   onAC: Boolean;
-  mins, pct, pctFloor: Integer;
+  pct: Integer;
+  dec: TLidDecision;
 begin
-  if not gLidClosed or gHandledClose then
-    Exit;
+{$IFDEF WINDOWS}
   if not GetSystemPowerStatus(S) then
     Exit;
   onAC := S.ACLineStatus = 1;
-  mins := LidBatteryMinutes;
   pct := S.BatteryLifePercent; // 255 = unknown
-  pctFloor := LidBatteryPct;
-  if onAC then begin
-    if not LidAcAwake then begin
-      gHandledClose := True;
-      LidLog('AC close, awake checkbox off -> sleep now');
-      SleepNow;
+  dec :=
+      LidEngineTick(
+          gEngine,
+          True,
+          gLidClosed,
+          onAC,
+          LidAcAwake,
+          LidBatteryMinutes,
+          pct,
+          LidBatteryPct,
+          False,
+          GetTick64
+      );
+  if dec.SleepNow then begin
+    case dec.Reason of
+      ldrLowBattery: LidLog(Format('battery low (%d%% <= %d%% floor): sleeping', [pct, LidBatteryPct]));
+      ldrTimer: LidLog(Format('battery close, %d min elapsed -> sleep', [LidBatteryMinutes]));
+      ldrClose: LidLog('close should sleep -> sleep now');
     end;
-    // awake checkbox on: the ES flags hold the machine; nothing to enforce
-  end
-  else begin
-    // Battery: two sleep conditions race, first one wins - the lid timer
-    // expiring, or charge reaching the low-battery floor. The floor is
-    // timer-mode independent (it also bounds the mins < 0 option); 255
-    // (unknown charge) never triggers it.
-    if (pct <> 255) and (pctFloor > 0) and (pct <= pctFloor) then begin
-      gHandledClose := True;
-      LidLog(Format('battery low (%d%% <= %d%% floor): sleeping', [pct, pctFloor]));
-      SleepNow;
-    end
-    else if mins = 0 then begin
-      gHandledClose := True;
-      LidLog('battery close, 0 min -> sleep now');
-      SleepNow;
-    end
-    else if mins > 0 then begin
-      // Window still running: the fine-grained loop re-checks every 500 ms.
-      if (GetTick64 - gClosedAtMs) >= Int64(mins) * 60000 then begin
-        gHandledClose := True;
-        LidLog(Format('battery close, %d min elapsed -> sleep', [mins]));
-        SleepNow;
-      end;
-    end;
-    // mins < 0 without a floor hit: stay awake until the battery dies
+    SleepNow;
   end;
+{$ENDIF}
 end;
 
 procedure NudgeMouse;
@@ -240,10 +223,11 @@ procedure TMoverThread.Execute;
 var
   Fine: Boolean;
 begin
+  LidEngineReset(gEngine);
   while not Terminated do begin
     // While the lid is closed a battery timer may be pending: tick finely.
     // Otherwise the original coarse cadence is enough.
-    Fine := gLidClosed and not gHandledClose;
+    Fine := gLidClosed and (not gEngine.Sent);
     if WakeEvent <> nil then begin
       if Fine then
         WakeEvent.WaitFor(500)
