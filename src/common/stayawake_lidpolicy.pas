@@ -26,8 +26,10 @@ type
   // Close-episode bookkeeping shared by all platforms: a reopen ends the
   // episode and re-arms the one-shot, a close starts the clock.
   TLidEngineState = record
-    ClosedSinceMs: Int64; // tick timestamp when the close was first seen
+    ClosedSinceMs: Int64; // tick timestamp the battery clock started (close,
+    // or the most recent AC->battery switch)
     WasClosed: Boolean; // lid was closed at the previous tick
+    WasOnAC: Boolean; // power source at the previous tick
     Sent: Boolean; // sleep already sent for this close episode
   end;
 
@@ -51,7 +53,8 @@ function LidDecide(
 procedure LidEngineReset(var S: TLidEngineState);
 
 // One stateful step: tracks the close episode (edge detection, elapsed
-// seconds, one-shot) and forwards to LidDecide. LidKnown=False (no lid probe
+// seconds, one-shot; the battery clock re-arms when AC is lost mid-episode,
+// so the minutes count from the power switch) and forwards to LidDecide. LidKnown=False (no lid probe
 // available) is treated as permanently open - no sleep decisions, enforcement
 // still computed. NowMs: wall ms (GetTickCount64 on Windows/macOS, the Linux
 // mover uses fpGetTime equivalents); only deltas are meaningful.
@@ -132,6 +135,7 @@ procedure LidEngineReset(var S: TLidEngineState);
 begin
   S.ClosedSinceMs := 0;
   S.WasClosed := False;
+  S.WasOnAC := False;
   S.Sent := False;
 end;
 
@@ -160,7 +164,14 @@ begin
   if not S.WasClosed then begin
     S.WasClosed := True;
     S.ClosedSinceMs := NowMs;
+  end
+  else if S.WasOnAC and (not OnAC) then begin
+    // Losing AC mid-episode re-arms the battery clock: the N minutes count
+    // from losing power, not from closing the lid (a flaky adapter dropping
+    // AC late in the episode cannot trigger instant settlement).
+    S.ClosedSinceMs := NowMs;
   end;
+  S.WasOnAC := OnAC;
   if NowMs >= S.ClosedSinceMs then
     elapsed := (NowMs - S.ClosedSinceMs) div 1000
   else

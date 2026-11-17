@@ -601,6 +601,20 @@ begin
   LidEngineReset(S);
   Tick(True, True, False, True, 0, 80, 15, 1000, False);
   Check('H11 win mins=0 fires on close tick', d.SleepNow and (d.Reason = ldrClose) and S.Sent);
+
+  // H12: losing AC mid-episode re-arms the battery clock - the N minutes
+  // count from the power switch (flaky-adapter friendly). mins = 5 here.
+  LidEngineReset(S);
+  Tick(True, True, True, True, 5, 80, 15, 100000, False); // close on AC: parked
+  Check('H12a closed on AC parked', (not d.SleepNow) and (S.ClosedSinceMs = 100000));
+  Tick(True, True, True, True, 5, 80, 15, 200000, False); // still on AC: parked
+  Check('H12b still parked on AC', (not d.SleepNow));
+  Tick(True, True, False, True, 5, 80, 15, 210000, False); // switch to battery: clock restarts
+  Check('H12c switch re-arms clock', (not d.SleepNow) and (S.ClosedSinceMs = 210000));
+  Tick(True, True, False, True, 5, 80, 15, 420000, False); // 3.5 min after the switch: holds
+  Check('H12d holds before expiry', (not d.SleepNow));
+  Tick(True, True, False, True, 5, 80, 15, 520000, False); // 5+ min after the switch: fires
+  Check('H12e fires 5 min after the switch', d.SleepNow and (d.Reason = ldrTimer) and S.Sent);
   Tick(True, True, False, True, 0, 80, 15, 60000, False);
   Check('H12 win one-shot holds', (not d.SleepNow));
   Tick(True, False, False, True, 0, 80, 15, 70000, False);
