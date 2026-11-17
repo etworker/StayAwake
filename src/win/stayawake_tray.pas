@@ -300,6 +300,8 @@ begin
   PostMessage(TrayHwnd, WM_NULL, 0, 0);
 end;
 
+procedure ResyncLidNotification; forward;
+
 function TrayWndProc(hwnd: HWND; msg: UINT; wParam: WPARAM; lParam: LPARAM): LRESULT; stdcall;
 begin
   Result := 0;
@@ -318,7 +320,8 @@ begin
       if (wParam = PBT_POWERSETTINGCHANGE_LID) or (wParam = PBT_POWERSETTINGCHANGE_ALT) then begin
         with PPowerBcastSetting(lParam)^ do begin
           if (DataLength >= 4) and CompareMem(@PowerSetting, @GUID_LIDSWITCH_STATE_CHANGE, SizeOf(TGUID)) then begin
-            stayawake_mover.LidLog('power setting: LID data=' + IntToStr(PDWORD(@Data[0])^));
+            // NotifyLidState logs only on change: the periodic resync flush
+            // stays silent unless the lid state actually moved.
             NotifyLidState(PDWORD(@Data[0])^ = 0);
           end
           else
@@ -326,7 +329,11 @@ begin
         end;
         Result := 1; // handled without DefWindowProc
       end;
+    WM_TIMER:
+      if wParam = 1 then
+        ResyncLidNotification;
     WM_DESTROY: begin
+      KillTimer(hwnd, 1);
       if LidNotify <> 0 then begin
         UnregisterPowerSettingNotificationW(LidNotify);
         LidNotify := 0;
@@ -366,6 +373,20 @@ begin
   if not GetSystemPowerStatus(S) then
     Exit;
   Result := ((S.BatteryFlag and $80) = 0) and (S.BatteryLifePercent <> 255);
+end;
+
+// Re-register the lid power notification: registration always flushes the
+// CURRENT lid state as a fresh broadcast, so a lost switch event self-heals
+// on the next resync (WM_TIMER, once a minute). Cheap kernel calls only.
+procedure ResyncLidNotification;
+begin
+{$IFDEF WINDOWS}
+  if (TrayHwnd = 0) or (not HasBattery) or (not Assigned(RegisterPowerSettingNotificationW)) then
+    Exit;
+  if LidNotify <> 0 then
+    UnregisterPowerSettingNotificationW(LidNotify);
+  LidNotify := RegisterPowerSettingNotificationW(TrayHwnd, GUID_LIDSWITCH_STATE_CHANGE, 0);
+{$ENDIF}
 end;
 
 // ---- Entry point ------------------------------------------------------------
@@ -441,6 +462,11 @@ begin
           nil
       );
   ShowWindow(TrayHwnd, SW_HIDE);
+
+  // Periodic lid-state resync: re-registering the power notification makes
+  // the system flush the CURRENT lid state, healing any lost switch event
+  // within one minute.
+  SetTimer(TrayHwnd, 1, 60000, nil);
 
   // Lid switch events (harmless no-op on desktops / when unavailable).
   if HasBattery then begin

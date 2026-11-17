@@ -151,6 +151,10 @@ end;
 procedure NotifyLidState(AClosed: Boolean);
 begin
 {$IFDEF WINDOWS}
+  // Unchanged -> silent (the tray re-registers the power notification every
+  // minute to resync; a lost lid event is healed by that flush instead).
+  if AClosed = gLidClosed then
+    Exit;
   gLidClosed := AClosed;
   if AClosed then
     LidLog('lid closed')
