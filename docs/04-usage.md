@@ -36,7 +36,7 @@ tar xzf stayawake-linux-x86_64.tar.gz
   - 平台差异只在**执行层**：
     - Linux：用户级守卫持有 logind inhibitor 拦截合盖事件（读内核 `/sys` 判断电源，免疫 UPower 误判）；电池定时到期/到线由应用 `systemctl suspend`（免提权）；日志 `/tmp/stayawake_power.log`；
     - macOS：`pmset disablesleep` 按电源分档，一次性 sudoers 白名单永久免密；睡眠入口用菜单「立即睡眠」；日志 `/tmp/stayawake_power.log`；
-    - Windows：需一次性管理员把「关闭盖子时」设为「不采取任何操作」（手动 `powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0` 与 `/setdcvalueindex ... 0`），之后全程免管理员——合盖事件由应用经电源通知感知，到期主动 `SetSuspendState`；日志 `%TEMP%\stayawake_lid.log`；
+    - Windows：需一次性管理员把「关闭盖子时」设为「不采取任何操作」，且**用电池合盖后中途掉电会重新起算定时**（N 分钟从掉电那一刻起算，适配器接触不良不会导致立即入睡）（手动 `powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0` 与 `/setdcvalueindex ... 0`），之后全程免管理员——合盖事件由应用经电源通知感知，到期主动 `SetSuspendState`；日志 `%TEMP%\stayawake_lid.log`；
 - **语言 / Language**：子菜单自动列出发现的语言包（默认随附 English / 中文）。切换后所有菜单文字、托盘悬浮提示、关于对话框立即更新；
 - **添加语言**：复制一份语言包改名为 `stayawake.<代码>.lang`（如 `stayawake.de.lang`），翻译右侧的值，放入**用户语言包目录**并重启，菜单自动出现该语言：Linux `~/.config/stayawake/langs/`、Windows `%APPDATA%\stayawake\langs\`、macOS `~/Library/Application Support/stayawake/langs/`（此目录更新应用不会丢失）。同名代码会覆盖随附语言包；缺失的键自动回退内置英文，不完整的翻译不会出现空白。文件编码支持 UTF-8（推荐，可有/可无 BOM）与系统 ANSI 代码页（如简体中文 Windows 下的 GB2312/GBK），按内容自动识别。随附语言包则位于应用目录（Windows/Linux 为 exe 旁，macOS 为 .app 内 `Contents/Resources`）；
 - **立即睡眠**（三平台）：Windows `SetSuspendState`（进程内启用 SeShutdownPrivilege，免管理员）、Linux `systemctl suspend`（活动会话免密）、macOS `pmset sleepnow`（免密；合盖守卫武装期间亦可立即睡）；
